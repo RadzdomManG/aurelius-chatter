@@ -6,7 +6,7 @@ const context: MemoryContext = {
   safetyRules: "safe",
   persona: "warm",
   latestFanMessage: "hey",
-  recentMessages: ["fan: hi", "creator: hey"],
+  recentMessages: ["fan: hi", "fan: hey"],
   relevantMemories: [],
   rollingSummary: "",
   unresolvedItems: [],

@@ -10,6 +10,9 @@ describe("Fanvue operator UI", () => {
     expect(source).toContain("setSelectedId");
     expect(source).toContain("onClick");
     expect(source).toContain("bot");
+    expect(source).toContain("Generate AI draft");
+    expect(source).toContain("Approve & send");
+    expect(source).toContain("creatorMessagesExcluded");
   });
 
   it("shows professional analytics metrics and graphs", () => {
