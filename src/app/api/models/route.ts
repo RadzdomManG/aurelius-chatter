@@ -14,7 +14,7 @@ export async function GET() {
   const { supabase, userId, organizationId } = await workspace();
   if (!userId) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!organizationId) return Response.json({ error: "No workspace membership found." }, { status: 403 });
-  const { data, error } = await supabase.from("creator_profiles").select("id, display_name, timezone, automation_mode, persona_profiles(id, display_name, instructions, active)").eq("organization_id", organizationId).order("created_at");
+  const { data, error } = await supabase.from("creator_profiles").select("id, display_name, timezone, automation_mode, persona_profiles(id, display_name, active)").eq("organization_id", organizationId).order("created_at");
   if (error) return Response.json({ error: "Models could not be loaded." }, { status: 503 });
   return Response.json({ models: data });
 }
