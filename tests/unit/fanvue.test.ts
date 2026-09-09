@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createOAuthState, createPkcePair } from "@/server/fanvue/pkce";
 import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createHmac } from "node:crypto";
@@ -44,5 +46,15 @@ describe("Fanvue security helpers", () => {
     expect(validatePricedMedia(50_001, [mediaUuid], 300)).toContain("capped");
     expect(normalizeScheduledAt("2026-09-10T10:30")).toMatch(/^2026-09-10T\d{2}:30:00\.000Z$/);
     expect(normalizeScheduledAt("bad-date")).toBeNull();
+  });
+
+  it("webhook route processes real-time message and follower event shapes", () => {
+    const source = readFileSync(join(process.cwd(), "src/app/api/webhooks/fanvue/route.ts"), "utf8");
+    expect(source).toContain("creator.message.received");
+    expect(source).toContain("creator.follow.created");
+    expect(source).toContain("unread_messages_count");
+    expect(source).toContain("data.follower");
+    expect(source).toContain("automation_jobs");
+    expect(source).toContain("processed");
   });
 });

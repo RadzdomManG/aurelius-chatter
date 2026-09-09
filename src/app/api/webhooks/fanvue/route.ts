@@ -3,17 +3,132 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
-function sanitizedEvent(raw: unknown): { id: string | null; type: string | null; creatorUuid: string | null; safePayload: Record<string, unknown> } {
-  if (!raw || typeof raw !== "object") return { id: null, type: null, creatorUuid: null, safePayload: {} };
+type FanvueWebhookData = Record<string, unknown>;
+type FanvueIdentity = { uuid?: string; handle?: string | null; display_name?: string | null; displayName?: string | null };
+
+function objectValue(value: unknown): FanvueWebhookData {
+  return value && typeof value === "object" ? value as FanvueWebhookData : {};
+}
+
+function identityValue(value: unknown): FanvueIdentity {
+  return value && typeof value === "object" ? value as FanvueIdentity : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function sanitizedEvent(raw: unknown): { id: string | null; type: string | null; creatorUuid: string | null; safePayload: Record<string, unknown>; data: FanvueWebhookData } {
+  if (!raw || typeof raw !== "object") return { id: null, type: null, creatorUuid: null, safePayload: {}, data: {} };
   const event = raw as Record<string, unknown>;
-  const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
-  const creator = data.creator && typeof data.creator === "object" ? data.creator as Record<string, unknown> : {};
+  const data = objectValue(event.data);
+  const creator = identityValue(data.creator);
+  const fan = identityValue(data.fan);
+  const follower = identityValue(data.follower);
   return {
     id: typeof event.id === "string" ? event.id : null,
     type: typeof event.type === "string" ? event.type : null,
     creatorUuid: typeof creator.uuid === "string" ? creator.uuid : null,
-    safePayload: { object: typeof data.object === "string" ? data.object : null, creatorUuid: typeof creator.uuid === "string" ? creator.uuid : null },
+    data,
+    safePayload: {
+      object: typeof data.object === "string" ? data.object : null,
+      creatorUuid: stringValue(creator.uuid),
+      fanUuid: stringValue(fan.uuid),
+      followerUuid: stringValue(follower.uuid),
+      messageUuid: stringValue(data.uuid),
+      sender: stringValue(data.sender),
+      unreadMessagesCount: numberValue(data.unread_messages_count),
+    },
   };
+}
+
+async function ensureFanConversation(supabase: ReturnType<typeof createSupabaseAdminClient>, input: {
+  organizationId: string;
+  creatorProfileId: string;
+  fan: FanvueIdentity;
+  unreadCount?: number | null;
+  lastMessageAt?: string | null;
+  status?: "ai_active" | "paused";
+}) {
+  const fanUuid = stringValue(input.fan.uuid);
+  if (!fanUuid) return null;
+  const { data: existingFan } = await supabase.from("fans").select("id, automation_paused").eq("creator_profile_id", input.creatorProfileId).eq("external_uuid", fanUuid).maybeSingle();
+  const { data: fan } = await supabase.from("fans").upsert({
+    organization_id: input.organizationId,
+    creator_profile_id: input.creatorProfileId,
+    external_uuid: fanUuid,
+    display_name: stringValue(input.fan.display_name) ?? stringValue(input.fan.displayName),
+    handle: stringValue(input.fan.handle),
+  }, { onConflict: "creator_profile_id,external_uuid" }).select("id, automation_paused").single();
+  if (!fan) return null;
+  const paused = Boolean(fan.automation_paused ?? existingFan?.automation_paused);
+  const { data: conversation } = await supabase.from("conversations").upsert({
+    organization_id: input.organizationId,
+    creator_profile_id: input.creatorProfileId,
+    fan_id: fan.id,
+    status: paused ? "paused" : input.status ?? "ai_active",
+    unread_count: input.unreadCount ?? 0,
+    last_message_at: input.lastMessageAt ?? new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "creator_profile_id,fan_id" }).select("id, status").single();
+  return conversation ? { fanId: fan.id as string, fanUuid, conversationId: conversation.id as string, status: conversation.status as string } : null;
+}
+
+async function processWebhookEvent(supabase: ReturnType<typeof createSupabaseAdminClient>, safe: ReturnType<typeof sanitizedEvent>, organizationId: string, creatorProfileId: string) {
+  const data = safe.data;
+  if (safe.type === "creator.follow.created") {
+    await ensureFanConversation(supabase, {
+      organizationId,
+      creatorProfileId,
+      fan: identityValue(data.follower),
+      unreadCount: 0,
+      lastMessageAt: typeof data.created_at === "string" ? data.created_at : new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (safe.type === "creator.message.deleted") {
+    const messageUuid = stringValue(data.uuid);
+    if (messageUuid) await supabase.from("messages").delete().eq("organization_id", organizationId).eq("creator_profile_id", creatorProfileId).eq("external_uuid", messageUuid);
+    return;
+  }
+
+  if (safe.type !== "creator.message.received" && safe.type !== "creator.message.sent") return;
+  const fan = identityValue(data.fan);
+  const conversation = await ensureFanConversation(supabase, {
+    organizationId,
+    creatorProfileId,
+    fan,
+    unreadCount: numberValue(data.unread_messages_count),
+    lastMessageAt: stringValue(data.created_at) ?? new Date().toISOString(),
+  });
+  const messageUuid = stringValue(data.uuid);
+  const text = stringValue(data.text);
+  if (!conversation || !messageUuid || !text) return;
+  const senderType = data.sender === "creator" || safe.type === "creator.message.sent" ? "creator" : "fan";
+  const { error: messageError } = await supabase.from("messages").upsert({
+    organization_id: organizationId,
+    creator_profile_id: creatorProfileId,
+    conversation_id: conversation.conversationId,
+    external_uuid: messageUuid,
+    sender_type: senderType,
+    body: text,
+    created_at: stringValue(data.created_at) ?? new Date().toISOString(),
+  }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+  if (!messageError && senderType === "fan" && conversation.status === "ai_active") {
+    try {
+      await supabase.from("automation_jobs").insert({
+        organization_id: organizationId,
+        creator_profile_id: creatorProfileId,
+        conversation_id: conversation.conversationId,
+        trigger_message_uuid: messageUuid,
+      }).throwOnError();
+    } catch {}
+  }
 }
 
 export async function POST(request: Request) {
@@ -35,7 +150,16 @@ export async function POST(request: Request) {
     }
     const { error: insertError } = await supabase.from("webhook_events").upsert({ organization_id: organizationId, creator_profile_id: creatorProfileId, external_event_id: safe.id, event_type: safe.type, sanitized_payload: safe.safePayload }, { onConflict: "external_event_id,event_type", ignoreDuplicates: true });
     if (insertError) return Response.json({ error: "Webhook event could not be persisted." }, { status: 503 });
-    return Response.json({ accepted: true, eventId: safe.id, eventType: safe.type }, { status: 202 });
+    if (organizationId && creatorProfileId) {
+      try {
+        await processWebhookEvent(supabase, safe, organizationId, creatorProfileId);
+        await supabase.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), last_error: null }).eq("external_event_id", safe.id).eq("event_type", safe.type);
+      } catch (error) {
+        await supabase.from("webhook_events").update({ status: "failed", last_error: error instanceof Error ? error.message : "Webhook processor failed." }).eq("external_event_id", safe.id).eq("event_type", safe.type);
+        return Response.json({ error: "Webhook event was saved but could not be processed." }, { status: 503 });
+      }
+    }
+    return Response.json({ accepted: true, processed: Boolean(organizationId && creatorProfileId), eventId: safe.id, eventType: safe.type }, { status: 202 });
   } catch {
     return Response.json({ error: "Webhook processing is not configured." }, { status: 503 });
   }
