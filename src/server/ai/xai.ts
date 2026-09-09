@@ -1,4 +1,4 @@
-import { serverEnv } from "@/lib/env";
+import { xaiEnv } from "@/lib/env";
 import { replyDecisionSchema, memoryExtractionSchema, type ReplyDecision, type MemoryExtraction } from "@/domain/ai/schemas";
 import type { MemoryContext } from "@/domain/memory/types";
 
@@ -9,9 +9,9 @@ function promptFor(context: MemoryContext, task: "reply" | "memory"): string {
 }
 
 async function complete(context: MemoryContext, task: "reply" | "memory"): Promise<unknown> {
-  const env = serverEnv();
-  if (!env.xaiApiKey || !env.xaiModel) throw new XaiProviderError("XAI_API_KEY and XAI_MODEL are required to enable AI generation.");
-  const response = await fetch(`${env.xaiBaseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.xaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.xaiModel, temperature: 0.4, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
+  const env = xaiEnv();
+  if (!env.apiKey || !env.model) throw new XaiProviderError("XAI_API_KEY and XAI_MODEL are required to enable AI generation.");
+  const response = await fetch(`${env.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.4, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
   if (!response.ok) throw new XaiProviderError(`xAI request failed with ${response.status}.`);
   const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const content = payload.choices?.[0]?.message?.content;

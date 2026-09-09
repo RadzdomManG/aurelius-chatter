@@ -2,6 +2,10 @@
 
 Aurelius Chatter is a multi-tenant, AI-assisted Fanvue conversation desk. The first vertical slice includes the inbox experience, tenant-safe fan-memory schema, bounded context assembly, memory safety rules, OAuth PKCE boundaries, signed webhook verification, and validated xAI contracts.
 
+# Aurelius Chatter
+
+Aurelius Chatter is a multi-tenant, AI-assisted Fanvue conversation desk. Production screens are data-driven and show explicit empty or setup states when integrations have not supplied real data.
+
 ## Local development
 
 ```bash
@@ -10,41 +14,16 @@ copy .env.example .env.local
 pnpm dev
 ```
 
-Use `pnpm typecheck`, `pnpm test`, and `pnpm build` before deployment. External integrations stay disabled until their encrypted Vercel environment variables are configured and verified against official Fanvue and xAI documentation.
+Useful checks are `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build`.
 
-## Memory model
+## Current vertical slice
 
-Facts are stored separately per organization, creator profile, and fan. Facts carry provenance, confidence, status, sensitivity, and source message UUID. Repeated facts confirm an existing record; corrections update the normalized record; unsafe values are rejected. Rolling summaries are checkpointed and only new messages after the checkpoint are summarized.This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+- Supabase session refresh and protected application routes
+- Tenant-scoped schema with RLS, encrypted Fanvue token storage, and idempotent webhook records
+- Fanvue OAuth PKCE boundaries and current `creator.*` webhook envelope handling
+- Bounded memory context assembly and validated xAI reply decisions
+- Isolated `/playground` using the same context and xAI provider path without sending to Fanvue
+- Truthful dashboard, integration health, analytics, and model empty states
 
-## Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
+External integrations remain in `Setup required` state until server-only environment variables are configured. See [docs/fanvue-setup.md](docs/fanvue-setup.md), [docs/security.md](docs/security.md), and [docs/deployment.md](docs/deployment.md).
 # or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
