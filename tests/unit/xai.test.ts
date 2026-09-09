@@ -30,7 +30,7 @@ describe("xAI cost controls", () => {
     await generateReplyDecision(context);
 
     const request = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as { model: string; max_tokens: number; messages: Array<{ content: string }> };
-    expect(request.model).toBe("grok-4.1-fast");
+    expect(request.model).toBe("grok-4.3");
     expect(request.max_tokens).toBe(123);
     expect(request.messages[0]?.content).not.toContain("Latest fan message");
   });

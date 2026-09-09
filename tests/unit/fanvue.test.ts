@@ -55,6 +55,9 @@ describe("Fanvue security helpers", () => {
     expect(source).toContain("unread_messages_count");
     expect(source).toContain("data.follower");
     expect(source).toContain("automation_jobs");
+    expect(source).toContain("maybeAutoReply");
+    expect(source).toContain("webhook_auto_reply");
+    expect(source).toContain("duplicate");
     expect(source).toContain("processed");
   });
 });

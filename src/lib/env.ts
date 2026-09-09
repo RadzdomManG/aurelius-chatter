@@ -28,7 +28,7 @@ export function xaiEnv() {
   return {
     apiKey: process.env.XAI_API_KEY,
     baseUrl: process.env.XAI_BASE_URL ?? "https://api.x.ai/v1",
-    model: process.env.XAI_MODEL?.trim() || "grok-4.1-fast",
+    model: process.env.XAI_MODEL?.trim() || "grok-4.3",
     maxOutputTokens: numberSetting("XAI_MAX_OUTPUT_TOKENS", 220),
     maxRecentMessages: numberSetting("XAI_MAX_RECENT_MESSAGES", 8),
     maxMemories: numberSetting("XAI_MAX_MEMORIES", 4),
