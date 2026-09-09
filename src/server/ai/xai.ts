@@ -12,7 +12,17 @@ async function complete(context: MemoryContext, task: "reply" | "memory"): Promi
   const env = xaiEnv();
   if (!env.apiKey || !env.model) throw new XaiProviderError("XAI_API_KEY and XAI_MODEL are required to enable AI generation.");
   const response = await fetch(`${env.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.4, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
-  if (!response.ok) throw new XaiProviderError(`xAI request failed with ${response.status}.`);
+  if (!response.ok) {
+    const errorBody = await response.text();
+    let providerMessage = "";
+    try {
+      const parsed = JSON.parse(errorBody) as { error?: { message?: string } | string };
+      providerMessage = typeof parsed.error === "string" ? parsed.error : parsed.error?.message ?? "";
+    } catch {
+      providerMessage = "";
+    }
+    throw new XaiProviderError(`xAI request failed with ${response.status}${providerMessage ? `: ${providerMessage}` : "."}`);
+  }
   const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new XaiProviderError("xAI returned no content.");
