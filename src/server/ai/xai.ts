@@ -6,7 +6,10 @@ import { ZodError } from "zod";
 export class XaiProviderError extends Error {}
 
 function promptFor(context: MemoryContext, task: "reply" | "memory"): string {
-  return `${context.safetyRules}\n\nTask: ${task}\nPersona:\n${context.persona}\nLatest fan message:\n${context.latestFanMessage}\nRecent messages:\n${context.recentMessages.join("\n")}\nRelevant memories:\n${context.relevantMemories.map((memory) => `${memory.memoryKey}: ${memory.memoryValue}`).join("\n")}\nRolling summary:\n${context.rollingSummary}\nApproved knowledge:\n${context.approvedKnowledge}\nReturn only the requested JSON structure. Never invent facts, prices, content, links, purchases, personal history, or promises.`;
+  const contract = task === "reply"
+    ? `Return exactly one JSON object with these fields: action (reply, wait, handoff, or ignore), replyText (string or null), conversationStage (new, rapport, engaged, sales_ready, after_sale, or support), intent (greeting, question, flirting, support, purchase_interest, complaint, or other), sentiment (positive, neutral, or negative), confidence (number from 0 to 1), suggestedOfferId (string or null), handoffReason (string or null), and riskFlags (array of strings).`
+    : `Return exactly one JSON object with memoryOperations (array), unresolvedItems (array), and summaryUpdateRequired (boolean).`;
+  return `${context.safetyRules}\n\nTask: ${task}\nPersona:\n${context.persona}\nLatest fan message:\n${context.latestFanMessage}\nRecent messages:\n${context.recentMessages.join("\n")}\nRelevant memories:\n${context.relevantMemories.map((memory) => `${memory.memoryKey}: ${memory.memoryValue}`).join("\n")}\nRolling summary:\n${context.rollingSummary}\nApproved knowledge:\n${context.approvedKnowledge}\n${contract}\nNever invent facts, prices, content, links, purchases, personal history, or promises.`;
 }
 
 async function complete(context: MemoryContext, task: "reply" | "memory"): Promise<unknown> {
