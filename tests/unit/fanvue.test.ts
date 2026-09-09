@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createOAuthState, createPkcePair } from "@/server/fanvue/pkce";
 import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createHmac } from "node:crypto";
+import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueSenderType } from "@/server/fanvue/client";
 
 describe("Fanvue security helpers", () => {
   it("creates a valid S256 PKCE pair", () => {
@@ -20,5 +21,13 @@ describe("Fanvue security helpers", () => {
     const header = `t=${timestamp},v0=${signature}`;
     expect(verifyFanvueSignature(body, header, "test-secret", timestamp)).toBe(true);
     expect(verifyFanvueSignature(`${body}x`, header, "test-secret", timestamp)).toBe(false);
+  });
+
+  it("normalizes Fanvue imported message fields", () => {
+    const message = { uuid: "message-1", text: " hello ", createdAt: "2026-09-10T00:00:00.000Z", sender: { uuid: "fan-1" } };
+    expect(fanvueMessageBody(message)).toBe("hello");
+    expect(fanvueMessageCreatedAt(message)).toBe("2026-09-10T00:00:00.000Z");
+    expect(fanvueSenderType(message, "creator-1")).toBe("fan");
+    expect(fanvueSenderType({ ...message, sender: { uuid: "creator-1" } }, "creator-1")).toBe("creator");
   });
 });

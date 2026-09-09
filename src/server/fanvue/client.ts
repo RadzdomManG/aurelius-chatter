@@ -23,3 +23,35 @@ export function fanvueAuthorizationUrl(state: string, challenge: string, scopes:
   url.searchParams.set("code_challenge_method", "S256");
   return url;
 }
+
+export type FanvueChat = {
+  isRead?: boolean;
+  unreadMessagesCount?: number;
+  user?: { uuid?: string; handle?: string; displayName?: string };
+  lastMessage?: { text?: string | null; senderUuid?: string; createdAt?: string };
+};
+
+export type FanvueMessage = {
+  uuid?: string;
+  text?: string | null;
+  body?: string | null;
+  createdAt?: string;
+  created_at?: string;
+  senderUuid?: string;
+  sender?: { uuid?: string };
+};
+
+export type FanvuePaged<T> = { data?: T[]; pagination?: { hasMore?: boolean } };
+
+export function fanvueMessageBody(message: FanvueMessage): string {
+  return (message.text ?? message.body ?? "").trim();
+}
+
+export function fanvueMessageCreatedAt(message: FanvueMessage): string {
+  return message.createdAt ?? message.created_at ?? new Date().toISOString();
+}
+
+export function fanvueSenderType(message: FanvueMessage, creatorUuid: string): "fan" | "creator" {
+  const senderUuid = message.sender?.uuid ?? message.senderUuid;
+  return senderUuid === creatorUuid ? "creator" : "fan";
+}
