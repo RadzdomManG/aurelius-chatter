@@ -2,7 +2,6 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,10 +15,11 @@ export default function LoginPage() {
     setBusy(true);
     setMessage("");
     try {
-      const supabase = createSupabaseBrowserClient();
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
+      const response = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to sign in.");
       router.push("/");
+      router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to sign in.");
     } finally {
@@ -31,6 +31,7 @@ export default function LoginPage() {
     setBusy(true);
     setMessage("");
     try {
+      const { createSupabaseBrowserClient } = await import("@/lib/supabase/browser");
       const supabase = createSupabaseBrowserClient();
       const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: `${window.location.origin}/` } });
       if (error) throw error;
