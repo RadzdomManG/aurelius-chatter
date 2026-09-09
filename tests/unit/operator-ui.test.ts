@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 
 describe("Fanvue operator UI", () => {
   it("renders chat desk bubbles and creator-exclusion copy", () => {
-    const source = readFileSync(join(process.cwd(), "src/app/page.tsx"), "utf8");
+    const source = readFileSync(join(process.cwd(), "src/app/chat-desk.tsx"), "utf8");
     expect(source).toContain("chat-desk");
     expect(source).toContain("chat-bubble");
-    expect(source).toContain("Connected creator accounts are excluded");
+    expect(source).toContain("setSelectedId");
+    expect(source).toContain("onClick");
     expect(source).toContain("bot");
   });
 

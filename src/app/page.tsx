@@ -1,21 +1,9 @@
 import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
-import { ConversationSendForm, MassMessageForm, PostToFanvueForm, StopAiButton, SyncFanvueButton, UnsendMessageButton } from "@/app/inbox-actions";
+import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
+import { MassMessageForm, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-
-type MessageRow = { body: string | null; created_at: string; external_uuid: string | null; sender_type: "fan" | "creator" | "system" };
-type ConversationRow = {
-  id: string;
-  status: string;
-  unreadCount: number;
-  fanName: string;
-  fanHandle: string | null;
-  latestMessage: string | null;
-  latestCreatorMessageUuid: string | null;
-  automationPaused: boolean;
-  messages: MessageRow[];
-};
 
 type DashboardData = {
   configured: boolean;
@@ -23,7 +11,7 @@ type DashboardData = {
   modelCount: number;
   conversationCount: number;
   unreadCount: number;
-  conversations: ConversationRow[];
+  conversations: ChatDeskConversation[];
 };
 
 async function getDashboardData(): Promise<DashboardData> {
@@ -52,18 +40,15 @@ async function getDashboardData(): Promise<DashboardData> {
       const fan = Array.isArray(conversation.fans) ? conversation.fans[0] : conversation.fans;
       if (fan?.external_uuid && creatorUuids.has(fan.external_uuid)) return [];
       const messages = (Array.isArray(conversation.messages) ? conversation.messages : [])
-        .filter((message): message is MessageRow => Boolean(message?.body))
+        .filter((message): message is ChatDeskMessage => Boolean(message?.body))
         .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-      const latestMessage = messages.at(-1)?.body ?? null;
-      const latestCreatorMessageUuid = [...messages].reverse().find((message) => message.sender_type === "creator")?.external_uuid ?? null;
       return [{
         id: conversation.id,
         status: conversation.status,
         unreadCount: conversation.unread_count ?? 0,
         fanName: fan?.display_name ?? fan?.handle ?? "Fan",
         fanHandle: fan?.handle ?? null,
-        latestMessage,
-        latestCreatorMessageUuid,
+        latestMessage: messages.at(-1)?.body ?? null,
         automationPaused: Boolean(fan?.automation_paused) || conversation.status !== "ai_active",
         messages,
       }];
@@ -88,7 +73,6 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 
 export default async function Home() {
   const data = await getDashboardData();
-  const selected = data.conversations[0] ?? null;
   const hasActivity = data.conversations.length > 0;
 
   return (
@@ -122,28 +106,7 @@ export default async function Home() {
             <Metric label="AI model" value="4.1 Fast" detail="Low-credit Grok mode" />
           </div>
 
-          {hasActivity && selected ? <section className="chat-desk">
-            <aside className="chat-list">
-              <div className="chat-search">Search username...</div>
-              {data.conversations.map((conversation, index) => <article className={`chat-list-row ${index === 0 ? "selected" : ""}`} key={conversation.id}>
-                <strong>{conversation.fanName}</strong>
-                <span>{conversation.fanHandle ? `@${conversation.fanHandle}` : "Fanvue fan"}</span>
-                <p>{conversation.latestMessage ?? "No message body imported yet."}</p>
-                <small>{conversation.unreadCount} unread</small>
-              </article>)}
-            </aside>
-            <section className="chat-thread">
-              <header><div><strong>{selected.fanName}</strong><span>{selected.fanHandle ? `@${selected.fanHandle}` : "Fanvue fan"} · {selected.status}</span></div><StopAiButton conversationId={selected.id} disabled={selected.automationPaused} /></header>
-              <div className="chat-bubbles">
-                {selected.messages.length ? selected.messages.map((message) => <div className={`chat-bubble ${message.sender_type === "fan" ? "fan" : "bot"}`} key={message.external_uuid ?? `${message.created_at}-${message.body}`}>
-                  <small>{message.sender_type === "fan" ? "fan" : "bot"} · {new Date(message.created_at).toLocaleString()}</small>
-                  <p>{message.body}</p>
-                  {message.sender_type === "creator" && message.external_uuid && <UnsendMessageButton conversationId={selected.id} messageUuid={message.external_uuid} />}
-                </div>) : <div className="chat-empty"><Bot size={22} /><p>No imported messages yet. Sync Fanvue to load the latest fan conversation.</p></div>}
-              </div>
-              <ConversationSendForm conversationId={selected.id} />
-            </section>
-          </section> : <section className="truth-empty-panel">
+          {hasActivity ? <ChatDesk conversations={data.conversations} /> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>
             <p className="truth-eyebrow">INBOX</p>
             <h2>No fan conversations yet.</h2>
