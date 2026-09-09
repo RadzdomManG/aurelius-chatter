@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
 import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
-import { MassMessageForm, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
+import { AutoReplySettingsForm, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type DashboardData = {
@@ -117,6 +117,8 @@ export default async function Home() {
           <section className="operator-grid">
             <MassMessageForm />
             <PostToFanvueForm />
+            <MediaVaultBrowser />
+            <AutoReplySettingsForm />
           </section>
 
           <p className="truth-disclaimer">Persona connection stays model-based: connect Fanvue from a model card so that the saved persona for that model is the one used for testing and automation context. Playground remains simulation-only.</p>

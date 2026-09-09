@@ -1,6 +1,7 @@
 "use client";
 
 import { Bot, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ConversationSendForm, StopAiButton, UnsendMessageButton } from "@/app/inbox-actions";
@@ -18,6 +19,7 @@ export type ChatDeskConversation = {
 };
 
 export function ChatDesk({ conversations }: { conversations: ChatDeskConversation[] }) {
+  const router = useRouter();
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "unread" | "paused">("all");
@@ -36,6 +38,13 @@ export function ChatDesk({ conversations }: { conversations: ChatDeskConversatio
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [selected?.id]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [router]);
 
   if (!selected) return null;
 

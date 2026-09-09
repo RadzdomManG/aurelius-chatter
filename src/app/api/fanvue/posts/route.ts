@@ -1,6 +1,7 @@
 import { fanvueRequest } from "@/server/fanvue/client";
 import { normalizeScheduledAt, parseMediaUuids, parsePriceCents, validateMediaUuids, validatePricedMedia } from "@/server/fanvue/actions";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { recordBotActionSafely } from "@/server/operator/logging";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,27 @@ export async function POST(request: Request) {
   const result = await fanvueRequest<{ uuid: string; publishAt?: string | null; publishedAt?: string | null }>("/v1/posts", accessToken, {
     method: "POST",
     body: JSON.stringify({ text, mediaUuids, price, audience, publishAt }),
+  });
+  if (publishAt) {
+    try {
+      await supabase.from("scheduled_operator_actions").insert({
+        organization_id: organizationId,
+        creator_profile_id: connection.creator_profile_id,
+        action_type: "scheduled_post",
+        status: "scheduled",
+        scheduled_at: publishAt,
+        external_uuid: result.uuid,
+        payload: { audience, mediaCount: mediaUuids.length, priceCents: price },
+      }).throwOnError();
+    } catch {}
+  }
+  await recordBotActionSafely(supabase, {
+    organizationId,
+    creatorProfileId: connection.creator_profile_id,
+    actionType: publishAt ? "post_schedule" : "post_create",
+    status: publishAt ? "queued" : "completed",
+    externalUuid: result.uuid,
+    metadata: { audience, mediaCount: mediaUuids.length, priceCents: price },
   });
   return Response.json({ posted: true, ...result });
 }

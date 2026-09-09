@@ -1,8 +1,8 @@
 "use client";
 
-import { Megaphone, PauseCircle, RefreshCw, Send, Trash2 } from "lucide-react";
+import { Megaphone, PauseCircle, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function SyncFanvueButton() {
   const router = useRouter();
@@ -184,6 +184,129 @@ export function PostToFanvueForm() {
     <label>Publish time<input name="publishAt" type="datetime-local" /></label>
     <label>Audience<select name="audience" defaultValue="subscribers"><option value="subscribers">Subscribers</option><option value="followers-and-subscribers">Followers and subscribers</option></select></label>
     <button className="truth-primary" disabled={busy} type="submit"><Send size={15} /> {busy ? "Submitting..." : "Post / Schedule"}</button>
+    {message && <small>{message}</small>}
+  </form>;
+}
+
+export function RetryJobButton({ jobId }: { jobId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  async function retry() {
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/automation/jobs/${jobId}/retry`, { method: "POST" });
+      if (response.ok) router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <button className="truth-secondary compact" type="button" onClick={retry} disabled={busy}>{busy ? "Queueing..." : "Retry"}</button>;
+}
+
+export function MediaVaultBrowser() {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [items, setItems] = useState<Array<{ uuid: string; name: string; mediaType: string; thumbnailUrl: string | null }>>([]);
+
+  async function load(formData?: FormData) {
+    setBusy(true);
+    setMessage("");
+    const folderName = formData?.get("folderName");
+    const query = typeof folderName === "string" && folderName.trim() ? `?folderName=${encodeURIComponent(folderName.trim())}` : "";
+    try {
+      const response = await fetch(`/api/fanvue/media${query}`);
+      const payload = await response.json() as { items?: Array<{ uuid: string; name: string; mediaType: string; thumbnailUrl: string | null }>; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Media vault could not be loaded.");
+      setItems(payload.items ?? []);
+      setMessage((payload.items ?? []).length ? "Vault media loaded. Copy UUIDs into message/post forms." : "No ready media found.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Media vault could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="operator-card media-vault-card" action={load}>
+    <h3>Media vault browser</h3>
+    <p>Loads ready Fanvue vault media with fresh thumbnail URLs. The app stores UUIDs only, not signed media URLs.</p>
+    <label>Folder name<input name="folderName" placeholder="Optional exact Fanvue folder name" /></label>
+    <button className="truth-primary" disabled={busy} type="submit"><RefreshCw size={15} /> {busy ? "Loading..." : "Load vault"}</button>
+    {message && <small>{message}</small>}
+    <div className="media-vault-grid">{items.map((item) => <button key={item.uuid} className="media-vault-item" type="button" onClick={() => navigator.clipboard?.writeText(item.uuid)}>
+      {item.thumbnailUrl ? <span className="media-vault-thumb" style={{ backgroundImage: `url(${item.thumbnailUrl})` }} /> : <span>{item.mediaType}</span>}
+      <strong>{item.name}</strong>
+      <small>{item.uuid}</small>
+    </button>)}</div>
+  </form>;
+}
+
+export function AutoReplySettingsForm() {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("Loading automation settings...");
+  const [settings, setSettings] = useState({
+    enabled: false,
+    approvalRequired: true,
+    quietHoursStart: "22:00",
+    quietHoursEnd: "08:00",
+    maxRepliesPerHour: 20,
+    minConfidence: 0.75,
+    ppvAllowed: false,
+    maxPpvCents: 50000,
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    fetch("/api/automation/settings").then((response) => response.json()).then((payload: { settings?: typeof settings; migrationRequired?: boolean }) => {
+      if (!mounted) return;
+      if (payload.settings) setSettings(payload.settings);
+      setMessage(payload.migrationRequired ? "Apply the latest Supabase migration to save durable settings." : "");
+    }).catch(() => mounted && setMessage("Automation settings could not be loaded."));
+    return () => { mounted = false; };
+  }, []);
+
+  async function submit(formData: FormData) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/automation/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          enabled: formData.get("enabled") === "on",
+          approvalRequired: formData.get("approvalRequired") === "on",
+          quietHoursStart: formData.get("quietHoursStart"),
+          quietHoursEnd: formData.get("quietHoursEnd"),
+          maxRepliesPerHour: formData.get("maxRepliesPerHour"),
+          minConfidence: formData.get("minConfidence"),
+          ppvAllowed: formData.get("ppvAllowed") === "on",
+          maxPpvCents: formData.get("maxPpvCents"),
+        }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Automation settings could not be saved.");
+      setMessage("Automation settings saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Automation settings could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="operator-card" action={submit}>
+    <h3>Auto-reply controls</h3>
+    <p>Set safe automation limits. Approval mode keeps AI drafts human-reviewed before Fanvue sends.</p>
+    <div className="operator-checks">
+      <label><input name="enabled" type="checkbox" defaultChecked={settings.enabled} /> Auto-reply enabled</label>
+      <label><input name="approvalRequired" type="checkbox" defaultChecked={settings.approvalRequired} /> Require approval</label>
+      <label><input name="ppvAllowed" type="checkbox" defaultChecked={settings.ppvAllowed} /> Allow PPV automation</label>
+    </div>
+    <label>Quiet hours start<input name="quietHoursStart" type="time" defaultValue={settings.quietHoursStart} /></label>
+    <label>Quiet hours end<input name="quietHoursEnd" type="time" defaultValue={settings.quietHoursEnd} /></label>
+    <label>Max replies per hour<input name="maxRepliesPerHour" type="number" min="1" max="500" defaultValue={settings.maxRepliesPerHour} /></label>
+    <label>Minimum AI confidence<input name="minConfidence" type="number" min="0" max="1" step="0.01" defaultValue={settings.minConfidence} /></label>
+    <label>Max PPV cents<input name="maxPpvCents" type="number" min="0" defaultValue={settings.maxPpvCents} /></label>
+    <button className="truth-primary" disabled={busy} type="submit"><Settings2 size={15} /> {busy ? "Saving..." : "Save controls"}</button>
     {message && <small>{message}</small>}
   </form>;
 }

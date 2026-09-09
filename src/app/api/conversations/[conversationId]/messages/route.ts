@@ -1,6 +1,7 @@
 import { fanvueRequest } from "@/server/fanvue/client";
 import { parseMediaUuids, parsePriceCents, validateMediaUuids, validatePricedMedia } from "@/server/fanvue/actions";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { recordBotActionSafely } from "@/server/operator/logging";
 
 export const runtime = "nodejs";
 
@@ -47,6 +48,15 @@ export async function POST(request: Request, context: { params: Promise<{ conver
     body: text || (price ? "PPV media message" : "Media message"),
     created_at: new Date().toISOString(),
   }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+  await recordBotActionSafely(supabase, {
+    organizationId,
+    creatorProfileId: conversation.creator_profile_id,
+    conversationId: conversation.id,
+    actionType: price ? "ppv_message_send" : "message_send",
+    status: "completed",
+    externalUuid: payload.messageUuid,
+    metadata: { mediaCount: mediaUuids.length, priceCents: price, source: "operator_chat" },
+  });
 
   return Response.json({ sent: true, messageUuid: payload.messageUuid });
 }

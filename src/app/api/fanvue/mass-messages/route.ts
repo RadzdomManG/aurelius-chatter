@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fanvueRequest } from "@/server/fanvue/client";
 import { normalizeScheduledAt, parseMediaUuids, parsePriceCents, validateMediaUuids, validatePricedMedia } from "@/server/fanvue/actions";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { recordBotActionSafely } from "@/server/operator/logging";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,27 @@ export async function POST(request: Request) {
     method: "POST",
     headers: { "Idempotency-Key": randomUUID() },
     body: JSON.stringify({ text, mediaUuids, price, scheduledAt, includedLists: { smartListIds }, excludedLists: { smartListIds: ["creators"] } }),
+  });
+  if (scheduledAt) {
+    try {
+      await supabase.from("scheduled_operator_actions").insert({
+        organization_id: organizationId,
+        creator_profile_id: connection.creator_profile_id,
+        action_type: price ? "scheduled_ppv_mass_message" : "scheduled_mass_message",
+        status: "scheduled",
+        scheduled_at: scheduledAt,
+        external_uuid: result.uuid,
+        payload: { smartListIds, excludedLists: { smartListIds: ["creators"] }, mediaCount: mediaUuids.length, priceCents: price },
+      }).throwOnError();
+    } catch {}
+  }
+  await recordBotActionSafely(supabase, {
+    organizationId,
+    creatorProfileId: connection.creator_profile_id,
+    actionType: scheduledAt ? "mass_message_schedule" : "mass_message_send",
+    status: scheduledAt ? "queued" : "completed",
+    externalUuid: result.uuid,
+    metadata: { recipientCount: result.recipientCount, smartListIds, creatorsExcluded: true, mediaCount: mediaUuids.length, priceCents: price },
   });
   return Response.json({ sent: true, ...result });
 }

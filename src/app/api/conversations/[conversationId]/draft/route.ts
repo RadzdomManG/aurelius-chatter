@@ -2,6 +2,7 @@ import { buildMemoryContext, estimateContextCharacters } from "@/domain/memory/c
 import { xaiEnv } from "@/lib/env";
 import { generateReplyDecision, XaiProviderError } from "@/server/ai/xai";
 import { healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { recordBotActionSafely } from "@/server/operator/logging";
 
 export const runtime = "nodejs";
 
@@ -65,6 +66,18 @@ export async function POST(_request: Request, context: { params: Promise<{ conve
     });
     const decision = await generateReplyDecision(contextValue);
     const promptCharacters = estimateContextCharacters(contextValue);
+    await recordBotActionSafely(supabase, {
+      organizationId,
+      creatorProfileId: conversation.creator_profile_id,
+      conversationId: conversation.id,
+      actionType: "ai_draft",
+      status: "completed",
+      provider: "xai",
+      model: env.model,
+      inputTokens: Math.ceil(promptCharacters / 4),
+      outputTokens: env.maxOutputTokens,
+      metadata: { personaName: persona?.display_name ?? null, fanMessagesUsed: contextValue.recentMessages.length, sentToFanvue: false },
+    });
     return Response.json({
       decision,
       personaName: persona?.display_name ?? null,

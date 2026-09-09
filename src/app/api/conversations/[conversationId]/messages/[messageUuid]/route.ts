@@ -1,5 +1,6 @@
 import { fanvueRequest } from "@/server/fanvue/client";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { recordBotActionSafely } from "@/server/operator/logging";
 
 export const runtime = "nodejs";
 
@@ -27,5 +28,13 @@ export async function DELETE(_request: Request, context: { params: Promise<{ con
   const accessToken = await accessTokenForFanvue(supabase, connection);
   await fanvueRequest<void>(`/v1/chats/${fan.external_uuid}/messages/${messageUuid}`, accessToken, { method: "DELETE" });
   await supabase.from("messages").delete().eq("conversation_id", conversation.id).eq("organization_id", organizationId).eq("external_uuid", messageUuid);
+  await recordBotActionSafely(supabase, {
+    organizationId,
+    creatorProfileId: conversation.creator_profile_id,
+    conversationId: conversation.id,
+    actionType: "message_unsend",
+    status: "completed",
+    externalUuid: messageUuid,
+  });
   return new Response(null, { status: 204 });
 }
