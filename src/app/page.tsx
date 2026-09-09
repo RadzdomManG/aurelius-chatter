@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
-import { StopAiButton, SyncFanvueButton } from "@/app/inbox-actions";
+import { ConversationSendForm, MassMessageForm, PostToFanvueForm, StopAiButton, SyncFanvueButton, UnsendMessageButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type ConversationRow = {
@@ -10,6 +10,7 @@ type ConversationRow = {
   unreadCount: number;
   fanName: string;
   latestMessage: string | null;
+  latestCreatorMessageUuid: string | null;
   automationPaused: boolean;
 };
 
@@ -37,7 +38,7 @@ async function getDashboardData(): Promise<DashboardData> {
     const [models, conversations, conversationRows] = await Promise.all([
       supabase.from("creator_profiles").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
       supabase.from("conversations").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
-      supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused), messages(body, created_at)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(8),
+      supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused), messages(body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(8),
     ]);
 
     const organization = membership.organizations as { name?: string } | { name?: string }[] | null;
@@ -45,13 +46,16 @@ async function getDashboardData(): Promise<DashboardData> {
     const rows = (conversationRows.data ?? []).map((conversation) => {
       const fan = Array.isArray(conversation.fans) ? conversation.fans[0] : conversation.fans;
       const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
-      const latestMessage = messages.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0]?.body ?? null;
+      const sortedMessages = messages.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      const latestMessage = sortedMessages[0]?.body ?? null;
+      const latestCreatorMessageUuid = sortedMessages.find((message) => message.sender_type === "creator")?.external_uuid ?? null;
       return {
         id: conversation.id,
         status: conversation.status,
         unreadCount: conversation.unread_count ?? 0,
         fanName: fan?.display_name ?? fan?.handle ?? "Fan",
         latestMessage,
+        latestCreatorMessageUuid,
         automationPaused: Boolean(fan?.automation_paused) || conversation.status !== "ai_active",
       };
     });
@@ -110,8 +114,8 @@ export default async function Home() {
 
           {hasActivity ? <section className="inbox-list">
             {data.conversations.map((conversation) => <article className="inbox-row" key={conversation.id}>
-              <div><strong>{conversation.fanName}</strong><p>{conversation.latestMessage ?? "No message body imported yet."}</p></div>
-              <div><span>{conversation.unreadCount} unread</span><StopAiButton conversationId={conversation.id} disabled={conversation.automationPaused} /></div>
+              <div><strong>{conversation.fanName}</strong><p>{conversation.latestMessage ?? "No message body imported yet."}</p><ConversationSendForm conversationId={conversation.id} /></div>
+              <div><span>{conversation.unreadCount} unread</span><StopAiButton conversationId={conversation.id} disabled={conversation.automationPaused} />{conversation.latestCreatorMessageUuid && <UnsendMessageButton conversationId={conversation.id} messageUuid={conversation.latestCreatorMessageUuid} />}</div>
             </article>)}
           </section> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>
@@ -123,8 +127,24 @@ export default async function Home() {
 
           <section className="inbox-capabilities">
             <p className="truth-eyebrow">FANVUE ACTIONS</p>
-            <h2>Available after review controls</h2>
-            <div><span>Message fans</span><span>Unsend</span><span>Post</span><span>Schedule</span><span>Mass message</span><span>Send PPV</span></div>
+            <h2>Operator controls</h2>
+            <p>These controls call Fanvue only when you submit them. Playground remains simulation-only.</p>
+            <div><span>Message fans</span><span>Unsend creator messages</span><span>Media UUID attachments</span><span>PPV</span><span>Mass message</span><span>Schedule mass</span><span>Post</span><span>Schedule posts</span></div>
+          </section>
+
+          <section className="operator-grid">
+            <MassMessageForm />
+            <PostToFanvueForm />
+            <article className="operator-card">
+              <h3>Auto-reply rules</h3>
+              <p>Per-fan Stop AI is active now. Full background auto-reply sending should stay off until reply limits, approval mode, quiet hours, and PPV limits are configured.</p>
+              <Link className="truth-secondary" href="/settings">Configure safety settings</Link>
+            </article>
+            <article className="operator-card">
+              <h3>Insights dashboard</h3>
+              <p>Confirmed inbox counts are shown above. Fanvue revenue/fan insight widgets can be loaded from the API once Fanvue returns insight data for this account.</p>
+              <Link className="truth-secondary" href="/analytics">Open insights</Link>
+            </article>
           </section>
 
           <p className="truth-disclaimer">Production analytics use confirmed application data only. Test activity stays isolated in Playground. Real Fanvue send actions require explicit review controls before activation.</p>

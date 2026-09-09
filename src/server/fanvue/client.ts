@@ -8,6 +8,7 @@ export async function fanvueRequest<T>(path: string, accessToken: string, init: 
   const env = serverEnv();
   const response = await fetch(`${env.fanvueApiBaseUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, "X-Fanvue-API-Version": env.fanvueApiVersion, "Content-Type": "application/json", ...init.headers } });
   if (!response.ok) throw new FanvueApiError(response.status, path, `Fanvue request failed with ${response.status}`, response.headers.get("retry-after") ?? undefined);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 

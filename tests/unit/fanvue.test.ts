@@ -4,6 +4,7 @@ import { createOAuthState, createPkcePair } from "@/server/fanvue/pkce";
 import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createHmac } from "node:crypto";
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueSenderType } from "@/server/fanvue/client";
+import { normalizeScheduledAt, parseMediaUuids, parsePriceCents, validateMediaUuids, validatePricedMedia } from "@/server/fanvue/actions";
 
 describe("Fanvue security helpers", () => {
   it("creates a valid S256 PKCE pair", () => {
@@ -29,5 +30,19 @@ describe("Fanvue security helpers", () => {
     expect(fanvueMessageCreatedAt(message)).toBe("2026-09-10T00:00:00.000Z");
     expect(fanvueSenderType(message, "creator-1")).toBe("fan");
     expect(fanvueSenderType({ ...message, sender: { uuid: "creator-1" } }, "creator-1")).toBe("creator");
+  });
+
+  it("validates Fanvue write payloads safely", () => {
+    const mediaUuid = "123e4567-e89b-12d3-a456-426614174000";
+    expect(parseMediaUuids(` ${mediaUuid}, ${mediaUuid} `)).toEqual([mediaUuid, mediaUuid]);
+    expect(validateMediaUuids([mediaUuid])).toBeNull();
+    expect(validateMediaUuids(["not-a-uuid"])).toContain("valid Fanvue media UUIDs");
+    expect(parsePriceCents("300")).toBe(300);
+    expect(validatePricedMedia(300, [mediaUuid], 300)).toBeNull();
+    expect(validatePricedMedia(299, [mediaUuid], 300)).toContain("at least 300");
+    expect(validatePricedMedia(300, [], 300)).toContain("require at least one media");
+    expect(validatePricedMedia(50_001, [mediaUuid], 300)).toContain("capped");
+    expect(normalizeScheduledAt("2026-09-10T10:30")).toMatch(/^2026-09-10T\d{2}:30:00\.000Z$/);
+    expect(normalizeScheduledAt("bad-date")).toBeNull();
   });
 });
