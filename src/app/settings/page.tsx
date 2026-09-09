@@ -14,12 +14,13 @@ export default async function SettingsPage() {
     const { data: userData } = await supabase.auth.getUser();
     if (userData.user) {
       signedIn = true;
-      const { data: membership } = await supabase
+      const { data: membership, error: membershipError } = await supabase
         .from("organization_members")
         .select("organization_id, role")
         .eq("user_id", userData.user.id)
         .limit(1)
         .maybeSingle();
+      if (membershipError) dataError = true;
       role = membership?.role ?? null;
       if (membership?.organization_id) {
         const { data: organization, error: organizationError } = await supabase
