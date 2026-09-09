@@ -42,7 +42,7 @@ export function ChatDesk({ conversations }: { conversations: ChatDeskConversatio
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") router.refresh();
-    }, 30000);
+    }, 3000);
     return () => window.clearInterval(interval);
   }, [router]);
 

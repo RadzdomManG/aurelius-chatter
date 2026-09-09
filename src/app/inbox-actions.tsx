@@ -28,6 +28,19 @@ export function SyncFanvueButton() {
   return <div className="inbox-action-stack"><button className="truth-primary" type="button" onClick={sync} disabled={busy}><RefreshCw size={16} /> {busy ? "Syncing..." : "Sync Fanvue"}</button>{message && <span>{message}</span>}</div>;
 }
 
+export function LiveInboxRefresh() {
+  const router = useRouter();
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") router.refresh();
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [router]);
+
+  return <span className="live-refresh-pill">Live refresh · 3s</span>;
+}
+
 export function StopAiButton({ conversationId, disabled }: { conversationId: string; disabled: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);

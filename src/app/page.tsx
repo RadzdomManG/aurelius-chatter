@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
 import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
-import { AutoReplySettingsForm, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
+import { AutoReplySettingsForm, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type DashboardData = {
@@ -11,11 +11,12 @@ type DashboardData = {
   modelCount: number;
   conversationCount: number;
   unreadCount: number;
+  pendingAiJobs: number;
   conversations: ChatDeskConversation[];
 };
 
 async function getDashboardData(): Promise<DashboardData> {
-  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, conversations: [] };
+  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, pendingAiJobs: 0, conversations: [] };
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) return empty;
 
   try {
@@ -29,9 +30,10 @@ async function getDashboardData(): Promise<DashboardData> {
     const { data: creatorConnections } = await supabase.from("fanvue_connections").select("external_user_uuid").eq("organization_id", membership.organization_id).eq("status", "healthy");
     const creatorUuids = new Set((creatorConnections ?? []).map((connection) => connection.external_user_uuid).filter(Boolean));
 
-    const [models, conversationRows] = await Promise.all([
+    const [models, conversationRows, pendingAiJobs] = await Promise.all([
       supabase.from("creator_profiles").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
       supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused, external_uuid), messages(body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(20),
+      supabase.from("automation_jobs").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id).eq("status", "pending"),
     ]);
 
     const organization = membership.organizations as { name?: string } | { name?: string }[] | null;
@@ -60,6 +62,7 @@ async function getDashboardData(): Promise<DashboardData> {
       modelCount: models.count ?? 0,
       conversationCount: rows.length,
       unreadCount: rows.reduce((total, conversation) => total + conversation.unreadCount, 0),
+      pendingAiJobs: pendingAiJobs.count ?? 0,
       conversations: rows,
     };
   } catch {
@@ -96,14 +99,14 @@ export default async function Home() {
         <div className="truth-content">
           <div className="truth-heading">
             <div><p className="truth-eyebrow">CONVERSATION DESK</p><h1>Fan conversations, clearly managed.</h1><p>Only fan accounts appear here. Connected creator accounts are excluded from dashboard counts, sync display, and bot targeting.</p></div>
-            <div className="inbox-top-actions"><SyncFanvueButton /><Link className="truth-primary" href="/models"><Plus size={16} /> Add model</Link></div>
+            <div className="inbox-top-actions"><LiveInboxRefresh /><SyncFanvueButton /><Link className="truth-primary" href="/models"><Plus size={16} /> Add model</Link></div>
           </div>
 
           <div className="truth-metrics">
             <Metric label="Models" value={String(data.modelCount)} detail={data.modelCount ? "Personas available" : "No models configured"} />
             <Metric label="Fan conversations" value={String(data.conversationCount)} detail={hasActivity ? "Creators excluded" : "No fan data yet"} />
             <Metric label="Unread" value={String(data.unreadCount)} detail={data.unreadCount ? "Needs attention" : "No unread conversations"} />
-            <Metric label="AI model" value="4.1 Fast" detail="Low-credit Grok mode" />
+            <Metric label="AI detected" value={String(data.pendingAiJobs)} detail="Pending fan-message jobs" />
           </div>
 
           {hasActivity ? <ChatDesk conversations={data.conversations} /> : <section className="truth-empty-panel">
