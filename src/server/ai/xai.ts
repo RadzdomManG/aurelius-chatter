@@ -1,6 +1,7 @@
 import { xaiEnv } from "@/lib/env";
 import { replyDecisionSchema, memoryExtractionSchema, type ReplyDecision, type MemoryExtraction } from "@/domain/ai/schemas";
 import type { MemoryContext } from "@/domain/memory/types";
+import { ZodError } from "zod";
 
 export class XaiProviderError extends Error {}
 
@@ -11,7 +12,7 @@ function promptFor(context: MemoryContext, task: "reply" | "memory"): string {
 async function complete(context: MemoryContext, task: "reply" | "memory"): Promise<unknown> {
   const env = xaiEnv();
   if (!env.apiKey || !env.model) throw new XaiProviderError("XAI_API_KEY and XAI_MODEL are required to enable AI generation.");
-  const response = await fetch(`${env.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.4, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
+  const response = await fetch(`${env.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.4, response_format: { type: "json_object" }, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
   if (!response.ok) {
     const errorBody = await response.text();
     let providerMessage = "";
@@ -29,5 +30,11 @@ async function complete(context: MemoryContext, task: "reply" | "memory"): Promi
   try { return JSON.parse(content); } catch { throw new XaiProviderError("xAI returned invalid JSON."); }
 }
 
-export async function generateReplyDecision(context: MemoryContext): Promise<ReplyDecision> { return replyDecisionSchema.parse(await complete(context, "reply")); }
-export async function extractMemoryOperations(context: MemoryContext): Promise<MemoryExtraction> { return memoryExtractionSchema.parse(await complete(context, "memory")); }
+export async function generateReplyDecision(context: MemoryContext): Promise<ReplyDecision> {
+  try { return replyDecisionSchema.parse(await complete(context, "reply")); }
+  catch (error) { if (error instanceof ZodError) throw new XaiProviderError("xAI returned JSON that did not match the reply decision schema."); throw error; }
+}
+export async function extractMemoryOperations(context: MemoryContext): Promise<MemoryExtraction> {
+  try { return memoryExtractionSchema.parse(await complete(context, "memory")); }
+  catch (error) { if (error instanceof ZodError) throw new XaiProviderError("xAI returned JSON that did not match the memory schema."); throw error; }
+}
