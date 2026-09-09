@@ -5,6 +5,20 @@ import { encryptToken } from "@/server/fanvue/encryption";
 
 export const runtime = "nodejs";
 
+async function fanvueTokenError(response: Response) {
+  const fallback = { error: "Fanvue token exchange failed.", fanvueStatus: response.status };
+  try {
+    const payload = await response.json() as { error?: string; error_description?: string };
+    return {
+      ...fallback,
+      fanvueError: payload.error ?? null,
+      fanvueErrorDescription: payload.error_description ?? null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -23,7 +37,7 @@ export async function GET(request: Request) {
   const headers: HeadersInit = { "Content-Type": "application/x-www-form-urlencoded" };
   if (env.fanvueClientSecret) headers.Authorization = `Basic ${Buffer.from(`${env.fanvueClientId}:${env.fanvueClientSecret}`).toString("base64")}`;
   const tokenResponse = await fetch("https://auth.fanvue.com/oauth2/token", { method: "POST", headers, body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: env.fanvueRedirectUri, code_verifier: stored.verifier }) });
-  if (!tokenResponse.ok) return Response.json({ error: "Fanvue token exchange failed." }, { status: 502 });
+  if (!tokenResponse.ok) return Response.json(await fanvueTokenError(tokenResponse), { status: 502 });
   const tokenPayload = await tokenResponse.json() as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string };
   if (!tokenPayload.access_token || !tokenPayload.refresh_token) return Response.json({ error: "Fanvue did not return the required tokens." }, { status: 502 });
   const identityResponse = await fetch(`${env.fanvueApiBaseUrl}/users/me`, { headers: { Authorization: `Bearer ${tokenPayload.access_token}`, "X-Fanvue-API-Version": env.fanvueApiVersion } });
