@@ -4,14 +4,17 @@ import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-r
 import { ConversationSendForm, MassMessageForm, PostToFanvueForm, StopAiButton, SyncFanvueButton, UnsendMessageButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+type MessageRow = { body: string | null; created_at: string; external_uuid: string | null; sender_type: "fan" | "creator" | "system" };
 type ConversationRow = {
   id: string;
   status: string;
   unreadCount: number;
   fanName: string;
+  fanHandle: string | null;
   latestMessage: string | null;
   latestCreatorMessageUuid: string | null;
   automationPaused: boolean;
+  messages: MessageRow[];
 };
 
 type DashboardData = {
@@ -35,36 +38,42 @@ async function getDashboardData(): Promise<DashboardData> {
     const { data: membership } = await supabase.from("organization_members").select("organization_id, organizations(name)").eq("user_id", userData.user.id).limit(1).maybeSingle();
     if (!membership?.organization_id) return { ...empty, configured: true };
 
-    const [models, conversations, conversationRows] = await Promise.all([
+    const { data: creatorConnections } = await supabase.from("fanvue_connections").select("external_user_uuid").eq("organization_id", membership.organization_id).eq("status", "healthy");
+    const creatorUuids = new Set((creatorConnections ?? []).map((connection) => connection.external_user_uuid).filter(Boolean));
+
+    const [models, conversationRows] = await Promise.all([
       supabase.from("creator_profiles").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
-      supabase.from("conversations").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
-      supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused), messages(body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(8),
+      supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused, external_uuid), messages(body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(20),
     ]);
 
     const organization = membership.organizations as { name?: string } | { name?: string }[] | null;
     const organizationName = Array.isArray(organization) ? organization[0]?.name ?? null : organization?.name ?? null;
-    const rows = (conversationRows.data ?? []).map((conversation) => {
+    const rows = (conversationRows.data ?? []).flatMap((conversation) => {
       const fan = Array.isArray(conversation.fans) ? conversation.fans[0] : conversation.fans;
-      const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
-      const sortedMessages = messages.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-      const latestMessage = sortedMessages[0]?.body ?? null;
-      const latestCreatorMessageUuid = sortedMessages.find((message) => message.sender_type === "creator")?.external_uuid ?? null;
-      return {
+      if (fan?.external_uuid && creatorUuids.has(fan.external_uuid)) return [];
+      const messages = (Array.isArray(conversation.messages) ? conversation.messages : [])
+        .filter((message): message is MessageRow => Boolean(message?.body))
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      const latestMessage = messages.at(-1)?.body ?? null;
+      const latestCreatorMessageUuid = [...messages].reverse().find((message) => message.sender_type === "creator")?.external_uuid ?? null;
+      return [{
         id: conversation.id,
         status: conversation.status,
         unreadCount: conversation.unread_count ?? 0,
         fanName: fan?.display_name ?? fan?.handle ?? "Fan",
+        fanHandle: fan?.handle ?? null,
         latestMessage,
         latestCreatorMessageUuid,
         automationPaused: Boolean(fan?.automation_paused) || conversation.status !== "ai_active",
-      };
+        messages,
+      }];
     });
 
     return {
       configured: true,
       organizationName,
       modelCount: models.count ?? 0,
-      conversationCount: conversations.count ?? 0,
+      conversationCount: rows.length,
       unreadCount: rows.reduce((total, conversation) => total + conversation.unreadCount, 0),
       conversations: rows,
     };
@@ -79,7 +88,8 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 
 export default async function Home() {
   const data = await getDashboardData();
-  const hasActivity = data.conversationCount > 0;
+  const selected = data.conversations[0] ?? null;
+  const hasActivity = data.conversations.length > 0;
 
   return (
     <main className="truth-shell">
@@ -101,53 +111,52 @@ export default async function Home() {
         <header className="truth-topbar"><div><span>Workspace</span><b>/</b><strong>Inbox</strong></div><Link className="truth-icon-link" href="/settings" aria-label="Open settings"><Settings size={18} /></Link></header>
         <div className="truth-content">
           <div className="truth-heading">
-            <div><p className="truth-eyebrow">CONVERSATION DESK</p><h1>Real conversations, clearly managed.</h1><p>Monitor Fanvue activity, review AI drafts, and keep every automation decision auditable.</p></div>
+            <div><p className="truth-eyebrow">CONVERSATION DESK</p><h1>Fan conversations, clearly managed.</h1><p>Only fan accounts appear here. Connected creator accounts are excluded from dashboard counts, sync display, and bot targeting.</p></div>
             <div className="inbox-top-actions"><SyncFanvueButton /><Link className="truth-primary" href="/models"><Plus size={16} /> Add model</Link></div>
           </div>
 
           <div className="truth-metrics">
-            <Metric label="Models" value={String(data.modelCount)} detail={data.modelCount ? "From your workspace" : "No models configured"} />
-            <Metric label="Conversations" value={String(data.conversationCount)} detail={hasActivity ? "Received from Fanvue" : "No data yet"} />
+            <Metric label="Models" value={String(data.modelCount)} detail={data.modelCount ? "Personas available" : "No models configured"} />
+            <Metric label="Fan conversations" value={String(data.conversationCount)} detail={hasActivity ? "Creators excluded" : "No fan data yet"} />
             <Metric label="Unread" value={String(data.unreadCount)} detail={data.unreadCount ? "Needs attention" : "No unread conversations"} />
-            <Metric label="Automation" value="Draft" detail="Paused per fan when needed" />
+            <Metric label="AI model" value="4.1 Fast" detail="Low-credit Grok mode" />
           </div>
 
-          {hasActivity ? <section className="inbox-list">
-            {data.conversations.map((conversation) => <article className="inbox-row" key={conversation.id}>
-              <div><strong>{conversation.fanName}</strong><p>{conversation.latestMessage ?? "No message body imported yet."}</p><ConversationSendForm conversationId={conversation.id} /></div>
-              <div><span>{conversation.unreadCount} unread</span><StopAiButton conversationId={conversation.id} disabled={conversation.automationPaused} />{conversation.latestCreatorMessageUuid && <UnsendMessageButton conversationId={conversation.id} messageUuid={conversation.latestCreatorMessageUuid} />}</div>
-            </article>)}
+          {hasActivity && selected ? <section className="chat-desk">
+            <aside className="chat-list">
+              <div className="chat-search">Search username...</div>
+              {data.conversations.map((conversation, index) => <article className={`chat-list-row ${index === 0 ? "selected" : ""}`} key={conversation.id}>
+                <strong>{conversation.fanName}</strong>
+                <span>{conversation.fanHandle ? `@${conversation.fanHandle}` : "Fanvue fan"}</span>
+                <p>{conversation.latestMessage ?? "No message body imported yet."}</p>
+                <small>{conversation.unreadCount} unread</small>
+              </article>)}
+            </aside>
+            <section className="chat-thread">
+              <header><div><strong>{selected.fanName}</strong><span>{selected.fanHandle ? `@${selected.fanHandle}` : "Fanvue fan"} · {selected.status}</span></div><StopAiButton conversationId={selected.id} disabled={selected.automationPaused} /></header>
+              <div className="chat-bubbles">
+                {selected.messages.length ? selected.messages.map((message) => <div className={`chat-bubble ${message.sender_type === "fan" ? "fan" : "bot"}`} key={message.external_uuid ?? `${message.created_at}-${message.body}`}>
+                  <small>{message.sender_type === "fan" ? "fan" : "bot"} · {new Date(message.created_at).toLocaleString()}</small>
+                  <p>{message.body}</p>
+                  {message.sender_type === "creator" && message.external_uuid && <UnsendMessageButton conversationId={selected.id} messageUuid={message.external_uuid} />}
+                </div>) : <div className="chat-empty"><Bot size={22} /><p>No imported messages yet. Sync Fanvue to load the latest fan conversation.</p></div>}
+              </div>
+              <ConversationSendForm conversationId={selected.id} />
+            </section>
           </section> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>
             <p className="truth-eyebrow">INBOX</p>
-            <h2>No conversations yet.</h2>
-            <p>Sync Fanvue to import unread chats. Your inbox will only show activity received from the API.</p>
+            <h2>No fan conversations yet.</h2>
+            <p>Sync Fanvue to import fan chats. Creator accounts are filtered out and will not be targeted by the bot.</p>
             <div className="truth-empty-actions"><SyncFanvueButton /><Link className="truth-secondary" href="/playground">Test safely in Playground</Link></div>
           </section>}
-
-          <section className="inbox-capabilities">
-            <p className="truth-eyebrow">FANVUE ACTIONS</p>
-            <h2>Operator controls</h2>
-            <p>These controls call Fanvue only when you submit them. Playground remains simulation-only.</p>
-            <div><span>Message fans</span><span>Unsend creator messages</span><span>Media UUID attachments</span><span>PPV</span><span>Mass message</span><span>Schedule mass</span><span>Post</span><span>Schedule posts</span></div>
-          </section>
 
           <section className="operator-grid">
             <MassMessageForm />
             <PostToFanvueForm />
-            <article className="operator-card">
-              <h3>Auto-reply rules</h3>
-              <p>Per-fan Stop AI is active now. Full background auto-reply sending should stay off until reply limits, approval mode, quiet hours, and PPV limits are configured.</p>
-              <Link className="truth-secondary" href="/settings">Configure safety settings</Link>
-            </article>
-            <article className="operator-card">
-              <h3>Insights dashboard</h3>
-              <p>Confirmed inbox counts are shown above. Fanvue revenue/fan insight widgets can be loaded from the API once Fanvue returns insight data for this account.</p>
-              <Link className="truth-secondary" href="/analytics">Open insights</Link>
-            </article>
           </section>
 
-          <p className="truth-disclaimer">Production analytics use confirmed application data only. Test activity stays isolated in Playground. Real Fanvue send actions require explicit review controls before activation.</p>
+          <p className="truth-disclaimer">Persona connection stays model-based: connect Fanvue from a model card so that the saved persona for that model is the one used for testing and automation context. Playground remains simulation-only.</p>
         </div>
       </section>
     </main>

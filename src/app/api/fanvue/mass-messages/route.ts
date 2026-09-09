@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   const mediaError = validateMediaUuids(mediaUuids);
   const priceError = validatePricedMedia(price, mediaUuids, 200);
   if (!text && mediaUuids.length === 0) return Response.json({ error: "Mass message text or media is required." }, { status: 400 });
-  if (smartListIds.length === 0) return Response.json({ error: "Choose at least one Fanvue recipient list." }, { status: 400 });
+  if (smartListIds.length === 0) return Response.json({ error: "Choose at least one Fanvue fan recipient list." }, { status: 400 });
   if (mediaError || priceError) return Response.json({ error: mediaError ?? priceError }, { status: 400 });
 
   const connection = await healthyFanvueConnection(supabase, organizationId);
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   const result = await fanvueRequest<{ uuid: string; publishedAt: string | null; recipientCount: number }>("/v1/chats/mass-messages", accessToken, {
     method: "POST",
     headers: { "Idempotency-Key": randomUUID() },
-    body: JSON.stringify({ text, mediaUuids, price, scheduledAt, includedLists: { smartListIds } }),
+    body: JSON.stringify({ text, mediaUuids, price, scheduledAt, includedLists: { smartListIds }, excludedLists: { smartListIds: ["creators"] } }),
   });
   return Response.json({ sent: true, ...result });
 }

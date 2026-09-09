@@ -123,7 +123,7 @@ export function MassMessageForm() {
       });
       const payload = await response.json() as { error?: string; uuid?: string; recipientCount?: number; publishedAt?: string | null };
       if (!response.ok) throw new Error(payload.error ?? "Mass message could not be sent.");
-      setMessage(`${payload.publishedAt ? "Sent" : "Scheduled"} mass message ${payload.uuid ?? ""} to ${payload.recipientCount ?? 0} resolved fans.`);
+      setMessage(`${payload.publishedAt ? "Sent" : "Scheduled"} mass message ${payload.uuid ?? ""} to ${payload.recipientCount ?? 0} resolved fans. Creators were excluded.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Mass message could not be sent.");
     } finally {
@@ -132,16 +132,17 @@ export function MassMessageForm() {
   }
 
   return <form className="operator-card" action={submit}>
-    <h3>Mass / scheduled message</h3>
+    <h3>Mass / scheduled fan message</h3>
     <label>Text<textarea name="text" placeholder="Broadcast message..." /></label>
     <label>Media UUIDs<input name="mediaUuids" placeholder="Optional, comma-separated" /></label>
     <label>PPV cents<input name="price" inputMode="numeric" placeholder="Optional, min 200" /></label>
     <label>Schedule time<input name="scheduledAt" type="datetime-local" /></label>
     <div className="operator-checks">
-      <label><input type="checkbox" name="smartListIds" value="subscribers" /> Subscribers</label>
-      <label><input type="checkbox" name="smartListIds" value="followers" /> Followers</label>
+      <label><input type="checkbox" name="smartListIds" value="subscribers" defaultChecked /> Subscribers</label>
+      <label><input type="checkbox" name="smartListIds" value="followers" defaultChecked /> Followers</label>
       <label><input type="checkbox" name="smartListIds" value="auto_renewing" /> Auto-renewing</label>
     </div>
+    <small>All sends exclude Fanvue creator accounts automatically.</small>
     <button className="truth-primary" disabled={busy} type="submit"><Megaphone size={15} /> {busy ? "Submitting..." : "Send / Schedule"}</button>
     {message && <small>{message}</small>}
   </form>;

@@ -24,6 +24,7 @@ export async function POST() {
     for (const chat of chats.data ?? []) {
       const fanUuid = chat.user?.uuid;
       if (!fanUuid) continue;
+      if (fanUuid === connection.external_user_uuid) continue;
       const { data: fan, error: fanError } = await supabase.from("fans").upsert({
         organization_id: organizationId,
         creator_profile_id: connection.creator_profile_id,
