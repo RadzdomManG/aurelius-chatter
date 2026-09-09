@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     const persona = await loadPlaygroundPersona(supabase, organizationId, modelId);
     if (persona instanceof Response) return persona;
 
+    const env = xaiEnv();
     const context = buildMemoryContext({
       persona: persona.instructions,
       latestFanMessage: message,
@@ -48,12 +49,17 @@ export async function POST(request: Request) {
       rollingSummary: "",
       unresolvedItems: [],
       approvedKnowledge: "No approved knowledge configured in this simulation.",
+    }, {
+      maxRecentMessages: env.maxRecentMessages,
+      maxMemories: env.maxMemories,
+      maxSummaryCharacters: env.maxSummaryCharacters,
+      maxPromptCharacters: env.maxPromptCharacters,
     });
     const decision = await generateReplyDecision(context);
     const fullHistory = [...history, message];
     return Response.json({
       decision,
-      model: xaiEnv().model ?? null,
+      model: env.model ?? null,
       diagnostics: {
         testData: true,
         recentMessagesUsed: context.recentMessages.length,
