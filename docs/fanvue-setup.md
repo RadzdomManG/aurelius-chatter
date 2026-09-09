@@ -2,11 +2,9 @@
 
 The application uses the official OAuth 2.0 authorization-code flow with PKCE.
 
-Local callback URL: `http://localhost:3000/api/fanvue/oauth/callback`
+Production callback URL: `https://aureliuschatters.vercel.app/api/fanvue/oauth/callback`
 
-The deployed callback URL is `${NEXT_PUBLIC_APP_URL}/api/fanvue/oauth/callback`.
-
-Webhook URL: `${NEXT_PUBLIC_APP_URL}/api/webhooks/fanvue`
+Webhook URL: `https://aureliuschatters.vercel.app/api/webhooks/fanvue`
 
 The current default authorization scopes are `openid offline_access offline read:self read:chat write:chat`. Add creator-event scopes only after confirming the current Fanvue event catalog and the permissions selected in the Fanvue Builder area. Store a space-separated override in `FANVUE_SCOPES` rather than changing source code.
 
