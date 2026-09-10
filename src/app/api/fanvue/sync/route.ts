@@ -1,5 +1,6 @@
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueChat, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
+import { markAutomationJobFromResult, processFanMessageAutoReply, queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
 
 export const runtime = "nodejs";
 
@@ -46,20 +47,50 @@ export async function POST() {
       conversationsImported += 1;
 
       const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=25&markAsRead=false`, accessToken);
+      let latestFanMessage: { uuid: string; body: string; createdAt: string } | null = null;
       for (const fanvueMessage of messages.data ?? []) {
         if (!fanvueMessage.uuid) continue;
         const body = fanvueMessageBody(fanvueMessage);
         if (!body) continue;
+        const createdAt = fanvueMessageCreatedAt(fanvueMessage);
+        const senderType = fanvueSenderType(fanvueMessage, connection.external_user_uuid);
         const { error: messageError } = await supabase.from("messages").upsert({
           organization_id: organizationId,
           creator_profile_id: connection.creator_profile_id,
           conversation_id: conversation.id,
           external_uuid: fanvueMessage.uuid,
-          sender_type: fanvueSenderType(fanvueMessage, connection.external_user_uuid),
+          sender_type: senderType,
           body,
-          created_at: fanvueMessageCreatedAt(fanvueMessage),
+          created_at: createdAt,
         }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
         if (!messageError) messagesImported += 1;
+        if (senderType === "fan" && (!latestFanMessage || new Date(createdAt).getTime() > new Date(latestFanMessage.createdAt).getTime())) {
+          latestFanMessage = { uuid: fanvueMessage.uuid, body, createdAt };
+        }
+      }
+
+      if (latestFanMessage && !fan.automation_paused) {
+        await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.id).eq("organization_id", organizationId);
+        const job = await queueLatestAutomationJob(supabase, {
+          organizationId,
+          creatorProfileId: connection.creator_profile_id,
+          conversationId: conversation.id,
+          triggerMessageUuid: latestFanMessage.uuid,
+        });
+        try {
+          const result = await processFanMessageAutoReply(supabase, {
+            organizationId,
+            creatorProfileId: connection.creator_profile_id,
+            conversationId: conversation.id,
+            fanId: fan.id,
+            fanUuid,
+            triggerMessageUuid: latestFanMessage.uuid,
+            latestFanMessage: latestFanMessage.body,
+          });
+          await markAutomationJobFromResult(supabase, job?.id, result);
+        } catch (error) {
+          if (job?.id) await supabase.from("automation_jobs").update({ status: "failed", last_error: error instanceof Error ? error.message : "Auto-reply failed.", updated_at: new Date().toISOString() }).eq("id", job.id);
+        }
       }
     }
 

@@ -2,7 +2,7 @@
 
 import { Megaphone, PauseCircle, PlayCircle, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function SyncFanvueButton() {
   const router = useRouter();
@@ -30,15 +30,29 @@ export function SyncFanvueButton() {
 
 export function LiveInboxRefresh() {
   const router = useRouter();
+  const syncingRef = useRef(false);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
+    const refreshInterval = window.setInterval(() => {
       if (document.visibilityState === "visible") router.refresh();
+    }, 1000);
+    const syncInterval = window.setInterval(async () => {
+      if (document.visibilityState !== "visible" || syncingRef.current) return;
+      syncingRef.current = true;
+      try {
+        const response = await fetch("/api/fanvue/sync", { method: "POST" });
+        if (response.ok) router.refresh();
+      } finally {
+        syncingRef.current = false;
+      }
     }, 3000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(refreshInterval);
+      window.clearInterval(syncInterval);
+    };
   }, [router]);
 
-  return <span className="live-refresh-pill">Live refresh · 1s</span>;
+  return <span className="live-refresh-pill">Live refresh · 1s · Fanvue sync · 3s</span>;
 }
 
 export function StopAiButton({ conversationId, disabled }: { conversationId: string; disabled: boolean }) {

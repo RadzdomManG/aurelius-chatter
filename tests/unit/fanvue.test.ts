@@ -7,6 +7,7 @@ import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createHmac } from "node:crypto";
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueSenderType } from "@/server/fanvue/client";
 import { normalizeScheduledAt, parseMediaUuids, parsePriceCents, validateMediaUuids, validatePricedMedia } from "@/server/fanvue/actions";
+import { creatorPromoSkipReason } from "@/server/automation/fanvue-auto-reply";
 
 describe("Fanvue security helpers", () => {
   it("creates a valid S256 PKCE pair", () => {
@@ -55,9 +56,26 @@ describe("Fanvue security helpers", () => {
     expect(source).toContain("unread_messages_count");
     expect(source).toContain("data.follower");
     expect(source).toContain("automation_jobs");
-    expect(source).toContain("maybeAutoReply");
-    expect(source).toContain("webhook_auto_reply");
+    expect(source).toContain("processFanMessageAutoReply");
     expect(source).toContain("duplicate");
     expect(source).toContain("processed");
+  });
+
+  it("Fanvue sync imports messages and triggers the same auto-reply pipeline", () => {
+    const source = readFileSync(join(process.cwd(), "src/app/api/fanvue/sync/route.ts"), "utf8");
+    expect(source).toContain("/v1/chats?page=1&size=50");
+    expect(source).toContain("markAsRead=false");
+    expect(source).toContain("queueLatestAutomationJob");
+    expect(source).toContain("processFanMessageAutoReply");
+  });
+
+  it("filters creator, collab, sfs, self-promo, and promo-link messages from auto replies", () => {
+    expect(creatorPromoSkipReason("collab?")).toContain("Skipped");
+    expect(creatorPromoSkipReason("sfs please")).toContain("Skipped");
+    expect(creatorPromoSkipReason("i am a creator too")).toContain("Skipped");
+    expect(creatorPromoSkipReason("subscribe to me")).toContain("Skipped");
+    expect(creatorPromoSkipReason("check https://fanvue.com/me")).toContain("Skipped");
+    expect(creatorPromoSkipReason("hey", "promo creator")).toContain("Skipped");
+    expect(creatorPromoSkipReason("hey are you there?")).toBeNull();
   });
 });
