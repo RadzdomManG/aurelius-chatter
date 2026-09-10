@@ -24,7 +24,21 @@ describe("xAI cost controls", () => {
     vi.stubEnv("XAI_MODEL", "");
     vi.stubEnv("XAI_MAX_OUTPUT_TOKENS", "123");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      choices: [{ message: { content: JSON.stringify({ action: "reply", replyText: "hey", conversationStage: "new", intent: "greeting", sentiment: "neutral", confidence: 0.8, suggestedOfferId: null, handoffReason: null, riskFlags: [] }) } }],
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            action: "reply",
+            replyText: "hey",
+            conversationStage: "new",
+            intent: "greeting",
+            sentiment: "neutral",
+            confidence: 0.8,
+            suggestedOfferId: null,
+            handoffReason: null,
+            riskFlags: [],
+          }),
+        },
+      }],
     })));
 
     await generateReplyDecision(context);
@@ -33,5 +47,33 @@ describe("xAI cost controls", () => {
     expect(request.model).toBe("grok-4.3");
     expect(request.max_tokens).toBe(123);
     expect(request.messages[0]?.content).not.toContain("Latest fan message");
+  });
+
+  it("accepts partial xAI JSON with optional fields omitted or stringified numbers", async () => {
+    vi.stubEnv("XAI_API_KEY", "xai-test-key");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            action: "reply",
+            replyText: "hey there",
+            conversationStage: "new",
+            intent: "greeting",
+            sentiment: "neutral",
+            confidence: "0.8",
+          }),
+        },
+      }],
+    })));
+
+    const result = await generateReplyDecision(context);
+
+    expect(result.action).toBe("reply");
+    expect(result.replyText).toBe("hey there");
+    expect(result.confidence).toBe(0.8);
+    expect(result.suggestedOfferId).toBeNull();
+    expect(result.handoffReason).toBeNull();
+    expect(result.riskFlags).toEqual([]);
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

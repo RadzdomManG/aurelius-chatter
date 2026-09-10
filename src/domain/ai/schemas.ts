@@ -1,16 +1,24 @@
 import { z } from "zod";
 
+const optionalString = z.string().nullable().optional();
+const optionalArray = z.array(z.string()).max(20).default([]);
+
 export const replyDecisionSchema = z.object({
   action: z.enum(["reply", "wait", "handoff", "ignore"]),
   replyText: z.string().max(5000).nullable(),
   conversationStage: z.enum(["new", "rapport", "engaged", "sales_ready", "after_sale", "support"]),
   intent: z.enum(["greeting", "question", "flirting", "support", "purchase_interest", "complaint", "other"]),
   sentiment: z.enum(["positive", "neutral", "negative"]),
-  confidence: z.number().min(0).max(1),
-  suggestedOfferId: z.string().nullable(),
-  handoffReason: z.string().nullable(),
-  riskFlags: z.array(z.string()).max(20),
-});
+  confidence: z.coerce.number().min(0).max(1),
+  suggestedOfferId: optionalString,
+  handoffReason: optionalString,
+  riskFlags: optionalArray,
+}).transform((value) => ({
+  ...value,
+  suggestedOfferId: value.suggestedOfferId ?? null,
+  handoffReason: value.handoffReason ?? null,
+  riskFlags: value.riskFlags ?? [],
+}));
 
 export const memoryExtractionSchema = z.object({
   memoryOperations: z.array(z.object({
