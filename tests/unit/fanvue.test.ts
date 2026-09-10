@@ -71,9 +71,15 @@ describe("Fanvue security helpers", () => {
 
   it("has a durable automation worker and realtime database publication migration", () => {
     const worker = readFileSync(join(process.cwd(), "src/app/api/automation/worker/route.ts"), "utf8");
+    const workerCore = readFileSync(join(process.cwd(), "src/server/automation/worker.ts"), "utf8");
+    const autoReply = readFileSync(join(process.cwd(), "src/server/automation/fanvue-auto-reply.ts"), "utf8");
     const migration = readFileSync(join(process.cwd(), "supabase/migrations/202609100002_realtime_message_pipeline.sql"), "utf8");
     expect(worker).toContain("CRON_SECRET");
     expect(worker).toContain("processAutomationQueue");
+    expect(workerCore).toContain("claim_automation_job");
+    expect(autoReply).toContain('result.status === "queued"');
+    expect(autoReply).toContain('status: "pending"');
+    expect(autoReply).toContain("locked_at: null");
     expect(migration).toContain("alter publication supabase_realtime add table public.messages");
     expect(migration).toContain("alter publication supabase_realtime add table public.conversations");
     expect(migration).toContain("claim_automation_job");

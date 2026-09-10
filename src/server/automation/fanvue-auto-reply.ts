@@ -20,7 +20,7 @@ type AutoReplyInput = {
 
 export type AutoReplyResult =
   | { status: "completed"; externalUuid?: string | null }
-  | { status: "queued"; reason: string }
+  | { status: "queued"; reason: string; retryAfterSeconds?: number }
   | { status: "cancelled"; reason: string };
 
 const CREATOR_PROMO_PATTERNS = [
@@ -100,7 +100,18 @@ export async function markAutomationJobFromResult(supabase: AutoReplySupabase, j
     return;
   }
   if (result.status === "cancelled") {
-    await supabase.from("automation_jobs").update({ status: "cancelled", last_error: result.reason, updated_at: new Date().toISOString() }).eq("id", jobId);
+    await supabase.from("automation_jobs").update({ status: "cancelled", locked_at: null, locked_by: null, last_error: result.reason, updated_at: new Date().toISOString() }).eq("id", jobId);
+    return;
+  }
+  if (result.status === "queued") {
+    await supabase.from("automation_jobs").update({
+      status: "pending",
+      available_at: new Date(Date.now() + (result.retryAfterSeconds ?? 30) * 1000).toISOString(),
+      locked_at: null,
+      locked_by: null,
+      last_error: result.reason,
+      updated_at: new Date().toISOString(),
+    }).eq("id", jobId);
   }
 }
 
@@ -147,19 +158,19 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
   const { data: fan } = await supabase.from("fans").select("automation_paused, display_name, handle").eq("id", input.fanId).eq("organization_id", input.organizationId).maybeSingle();
   const skipReason = creatorPromoSkipReason(input.latestFanMessage, `${fan?.display_name ?? ""} ${fan?.handle ?? ""}`);
   if (skipReason) return { status: "cancelled", reason: skipReason };
-  if (fan?.automation_paused) return { status: "queued", reason: "AI stopped for this fan." };
+  if (fan?.automation_paused) return { status: "cancelled", reason: "AI stopped for this fan." };
 
   const { data: conversation } = await supabase.from("conversations").select("status").eq("id", input.conversationId).eq("organization_id", input.organizationId).maybeSingle();
-  if (conversation?.status === "paused") return { status: "queued", reason: "AI stopped for this conversation." };
+  if (conversation?.status === "paused") return { status: "cancelled", reason: "AI stopped for this conversation." };
 
   const { data: settings } = await supabase.from("automation_settings").select("enabled, approval_required, quiet_hours_start, quiet_hours_end, max_replies_per_hour, min_confidence").eq("organization_id", input.organizationId).is("creator_profile_id", null).maybeSingle();
   const automation = settings ?? { enabled: true, approval_required: false, quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0 };
-  if (!automation.enabled) return { status: "queued", reason: "Bot is stopped for all fans." };
-  if (automation.approval_required) return { status: "queued", reason: "Manual approval is enabled." };
+  if (!automation.enabled) return { status: "cancelled", reason: "Bot is stopped for all fans." };
+  if (automation.approval_required) return { status: "cancelled", reason: "Manual approval is enabled." };
 
   const { data: latestMessage } = await supabase.from("messages").select("external_uuid, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (latestMessage?.external_uuid !== input.triggerMessageUuid || latestMessage.sender_type !== "fan") return { status: "queued", reason: "A newer local message exists." };
-  if (new Date(latestMessage.created_at).getTime() < Date.now() - 300_000) return { status: "queued", reason: "Fan message is no longer fresh." };
+  if (latestMessage?.external_uuid !== input.triggerMessageUuid || latestMessage.sender_type !== "fan") return { status: "cancelled", reason: "A newer local message exists." };
+  if (new Date(latestMessage.created_at).getTime() < Date.now() - 300_000) return { status: "cancelled", reason: "Fan message is no longer fresh." };
 
   const parseTime = (value: unknown) => {
     if (typeof value !== "string" || !/^\d{2}:\d{2}$/.test(value)) return null;
@@ -171,17 +182,17 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
   const quietStart = parseTime(automation.quiet_hours_start);
   const quietEnd = parseTime(automation.quiet_hours_end);
   const inQuietHours = quietStart !== null && quietEnd !== null && (quietStart <= quietEnd ? currentMinutes >= quietStart && currentMinutes < quietEnd : currentMinutes >= quietStart || currentMinutes < quietEnd);
-  if (inQuietHours) return { status: "queued", reason: "Quiet hours are active." };
+  if (inQuietHours) return { status: "queued", reason: "Quiet hours are active.", retryAfterSeconds: 300 };
 
   const since = new Date(Date.now() - 3600000).toISOString();
   const { count } = await supabase.from("bot_action_logs").select("id", { count: "exact", head: true }).eq("organization_id", input.organizationId).in("action_type", ["message_send", "ppv_message_send"]).gte("created_at", since);
-  if ((count ?? 0) >= Number(automation.max_replies_per_hour ?? 20)) return { status: "queued", reason: "Hourly auto-reply limit reached." };
+  if ((count ?? 0) >= Number(automation.max_replies_per_hour ?? 20)) return { status: "queued", reason: "Hourly auto-reply limit reached.", retryAfterSeconds: 300 };
   const { count: recentConversationReplies } = await supabase.from("bot_action_logs").select("id", { count: "exact", head: true }).eq("organization_id", input.organizationId).eq("conversation_id", input.conversationId).eq("action_type", "message_send").gte("created_at", new Date(Date.now() - 90_000).toISOString());
-  if ((recentConversationReplies ?? 0) > 0) return { status: "queued", reason: "Recent reply already sent to this fan." };
+  if ((recentConversationReplies ?? 0) > 0) return { status: "queued", reason: "Recent reply already sent to this fan.", retryAfterSeconds: 90 };
 
   const { data: persona } = await supabase.from("persona_profiles").select("display_name, instructions").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("active", true).maybeSingle();
   const instructions = typeof persona?.instructions === "string" ? persona.instructions.trim() : "";
-  if (!instructions) return { status: "queued", reason: "No active persona is configured." };
+  if (!instructions) return { status: "cancelled", reason: "No active persona is configured." };
 
   const { data: messages } = await supabase.from("messages").select("body, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: true }).limit(12);
   const env = xaiEnv();
@@ -200,10 +211,10 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
     maxPromptCharacters: env.maxPromptCharacters,
   });
   const decision = await generateReplyDecision(contextValue);
-  if (decision.action !== "reply" || !decision.replyText?.trim() || decision.confidence < Number(automation.min_confidence ?? 0)) return { status: "queued", reason: "AI did not produce a sendable reply." };
+  if (decision.action !== "reply" || !decision.replyText?.trim() || decision.confidence < Number(automation.min_confidence ?? 0)) return { status: "cancelled", reason: "AI did not produce a sendable reply." };
 
   const { data: connection } = await supabase.from("fanvue_connections").select("id, encrypted_access_token, encrypted_refresh_token, access_token_expires_at, external_user_uuid").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("status", "healthy").maybeSingle();
-  if (!connection || input.fanUuid === connection.external_user_uuid) return { status: "queued", reason: "Fanvue connection is unavailable or points to the owner account." };
+  if (!connection || input.fanUuid === connection.external_user_uuid) return { status: "cancelled", reason: "Fanvue connection is unavailable or points to the owner account." };
   const accessToken = await accessTokenForAutomation(supabase, connection);
   const payload = await fanvueRequest<{ messageUuid: string }>(`/v1/chats/${input.fanUuid}/message`, accessToken, {
     method: "POST",

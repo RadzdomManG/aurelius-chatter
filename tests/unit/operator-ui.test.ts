@@ -16,6 +16,9 @@ describe("Fanvue operator UI", () => {
     expect(source).toContain("router.refresh");
     expect(source).toContain("postgres_changes");
     expect(source).toContain("60000");
+    expect(source).toContain("fallback");
+    expect(source).toContain("Live via Fanvue sync");
+    expect(source).toContain("3000");
   });
 
   it("shows professional analytics metrics and graphs", () => {

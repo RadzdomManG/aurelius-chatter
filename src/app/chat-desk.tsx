@@ -30,7 +30,7 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
   const router = useRouter();
   const [liveConversations, setLiveConversations] = useState(conversations);
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "");
-  const [realtimeState, setRealtimeState] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
+  const [realtimeState, setRealtimeState] = useState<"connecting" | "live" | "fallback" | "offline">("connecting");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "unread" | "paused">("all");
   const [draft, setDraft] = useState("");
@@ -51,7 +51,24 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
-    const channel = supabase
+    let active = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    const stateRef = { current: "connecting" as "connecting" | "live" | "fallback" | "offline" };
+    const syncNow = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const response = await fetch("/api/fanvue/sync", { method: "POST" });
+        if (response.ok) router.refresh();
+      } catch {
+        if (stateRef.current !== "live") setRealtimeState("offline");
+      }
+    };
+
+    async function subscribe() {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      if (data.session?.access_token) supabase.realtime.setAuth(data.session.access_token);
+      channel = supabase
       .channel(`inbox:${organizationId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `organization_id=eq.${organizationId}` }, (payload) => {
         const row = payload.new as RealtimeMessageRow;
@@ -78,19 +95,33 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
         router.refresh();
       })
       .subscribe((status) => {
-        if (status === "SUBSCRIBED") setRealtimeState("live");
-        if (status === "CHANNEL_ERROR") setRealtimeState("offline");
-        if (status === "TIMED_OUT") setRealtimeState("reconnecting");
-        if (status === "CLOSED") setRealtimeState("offline");
+        if (status === "SUBSCRIBED") {
+          stateRef.current = "live";
+          setRealtimeState("live");
+        }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          stateRef.current = "fallback";
+          setRealtimeState("fallback");
+          void syncNow();
+        }
       });
+    }
+
+    void subscribe();
 
     const reconciliation = window.setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
+      if (stateRef.current === "live" && document.visibilityState === "visible") router.refresh();
     }, 60000);
+    const fallbackSync = window.setInterval(() => {
+      if (stateRef.current !== "live") void syncNow();
+    }, 3000);
+    void syncNow();
 
     return () => {
+      active = false;
       window.clearInterval(reconciliation);
-      supabase.removeChannel(channel);
+      window.clearInterval(fallbackSync);
+      if (channel) supabase.removeChannel(channel);
     };
   }, [organizationId, router]);
 
@@ -145,7 +176,7 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
       </button>)}
     </aside>
     <section className="chat-thread">
-      <span className={`realtime-state ${realtimeState}`}>Realtime: {realtimeState}</span>
+      <span className={`realtime-state ${realtimeState}`}>{realtimeState === "fallback" ? "Live via Fanvue sync" : `Realtime: ${realtimeState}`}</span>
       <header><div><strong>{selected.fanName}</strong><span>{selected.fanHandle ? `@${selected.fanHandle}` : "Fanvue fan"} · {selected.status}</span></div><StopAiButton conversationId={selected.id} disabled={selected.automationPaused} /></header>
       <div className="chat-bubbles">
         {selected.messages.length ? selected.messages.map((message) => <div className={`chat-bubble ${message.sender_type === "fan" ? "fan" : "bot"}`} key={message.external_uuid ?? `${message.created_at}-${message.body}`}>
