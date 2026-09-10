@@ -6,6 +6,7 @@ import { processAutomationQueue } from "@/server/automation/worker";
 import { after } from "next/server";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const SYNC_CHAT_LIMIT = 12;
 const SYNC_MESSAGES_PER_CHAT = 8;
@@ -53,7 +54,8 @@ export async function POST() {
       if (conversationError || !conversation) continue;
       conversationsImported += 1;
 
-      const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=${SYNC_MESSAGES_PER_CHAT}&markAsRead=false`, accessToken);
+      const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=${SYNC_MESSAGES_PER_CHAT}&markAsRead=false`, accessToken).catch(() => null);
+      if (!messages) continue;
       let latestFanMessage: { uuid: string; body: string; createdAt: string } | null = null;
       for (const fanvueMessage of messages.data ?? []) {
         if (!fanvueMessage.uuid) continue;
@@ -87,7 +89,7 @@ export async function POST() {
       }
     }
 
-    after(() => processAutomationQueue(3).catch(() => undefined));
+    after(() => processAutomationQueue(10).catch(() => undefined));
     return Response.json({ synced: true, conversationsImported, messagesImported });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Fanvue sync failed.";
