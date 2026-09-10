@@ -104,6 +104,45 @@ export async function markAutomationJobFromResult(supabase: AutoReplySupabase, j
   }
 }
 
+export async function processClaimedAutomationJob(supabase: AutoReplySupabase, job: {
+  id: string;
+  organization_id: string;
+  creator_profile_id: string;
+  conversation_id: string;
+  trigger_message_uuid: string;
+  attempts: number;
+}): Promise<AutoReplyResult> {
+  const { data: conversation } = await supabase
+    .from("conversations")
+    .select("id, fan_id, status, fans(id, external_uuid, automation_paused)")
+    .eq("id", job.conversation_id)
+    .eq("organization_id", job.organization_id)
+    .maybeSingle();
+  const fan = Array.isArray(conversation?.fans) ? conversation?.fans[0] : conversation?.fans;
+  if (!conversation || !fan?.id || !fan.external_uuid) return { status: "cancelled", reason: "Conversation or fan was not found." };
+
+  const { data: message } = await supabase
+    .from("messages")
+    .select("external_uuid, body, sender_type, created_at")
+    .eq("organization_id", job.organization_id)
+    .eq("conversation_id", job.conversation_id)
+    .eq("external_uuid", job.trigger_message_uuid)
+    .maybeSingle();
+  if (!message?.body || message.sender_type !== "fan") return { status: "cancelled", reason: "Trigger message is not a fan message." };
+
+  const result = await processFanMessageAutoReply(supabase, {
+    organizationId: job.organization_id,
+    creatorProfileId: job.creator_profile_id,
+    conversationId: job.conversation_id,
+    fanId: fan.id,
+    fanUuid: fan.external_uuid,
+    triggerMessageUuid: message.external_uuid,
+    latestFanMessage: message.body,
+  });
+  await markAutomationJobFromResult(supabase, job.id, result);
+  return result;
+}
+
 export async function processFanMessageAutoReply(supabase: AutoReplySupabase, input: AutoReplyInput): Promise<AutoReplyResult> {
   const { data: fan } = await supabase.from("fans").select("automation_paused, display_name, handle").eq("id", input.fanId).eq("organization_id", input.organizationId).maybeSingle();
   const skipReason = creatorPromoSkipReason(input.latestFanMessage, `${fan?.display_name ?? ""} ${fan?.handle ?? ""}`);

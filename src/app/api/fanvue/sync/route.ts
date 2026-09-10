@@ -1,6 +1,8 @@
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueChat, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
-import { markAutomationJobFromResult, processFanMessageAutoReply, queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
+import { queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
+import { processAutomationQueue } from "@/server/automation/worker";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 
@@ -71,29 +73,16 @@ export async function POST() {
 
       if (latestFanMessage && !fan.automation_paused) {
         await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.id).eq("organization_id", organizationId);
-        const job = await queueLatestAutomationJob(supabase, {
+        await queueLatestAutomationJob(supabase, {
           organizationId,
           creatorProfileId: connection.creator_profile_id,
           conversationId: conversation.id,
           triggerMessageUuid: latestFanMessage.uuid,
         });
-        try {
-          const result = await processFanMessageAutoReply(supabase, {
-            organizationId,
-            creatorProfileId: connection.creator_profile_id,
-            conversationId: conversation.id,
-            fanId: fan.id,
-            fanUuid,
-            triggerMessageUuid: latestFanMessage.uuid,
-            latestFanMessage: latestFanMessage.body,
-          });
-          await markAutomationJobFromResult(supabase, job?.id, result);
-        } catch (error) {
-          if (job?.id) await supabase.from("automation_jobs").update({ status: "failed", last_error: error instanceof Error ? error.message : "Auto-reply failed.", updated_at: new Date().toISOString() }).eq("id", job.id);
-        }
       }
     }
 
+    after(() => processAutomationQueue(3).catch(() => undefined));
     return Response.json({ synced: true, conversationsImported, messagesImported });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Fanvue sync failed.";

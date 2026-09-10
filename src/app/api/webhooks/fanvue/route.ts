@@ -1,7 +1,9 @@
 import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
-import { accessTokenForAutomation, markAutomationJobFromResult, processFanMessageAutoReply, queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
+import { accessTokenForAutomation, queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
+import { processAutomationQueue } from "@/server/automation/worker";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 
@@ -170,21 +172,7 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
   const trigger = syncedLatest ?? (messageUuid && text ? { uuid: messageUuid, body: text, createdAt: stringValue(data.created_at) ?? new Date().toISOString() } : null);
   if (!trigger) return;
   if (!messageError && senderType === "fan" && conversation.status === "ai_active") {
-    const job = await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: trigger.uuid });
-    try {
-      const autoStatus = await processFanMessageAutoReply(supabase, {
-        organizationId,
-        creatorProfileId,
-        conversationId: conversation.conversationId,
-        fanId: conversation.fanId,
-        fanUuid: conversation.fanUuid,
-        triggerMessageUuid: trigger.uuid,
-        latestFanMessage: trigger.body,
-      });
-      await markAutomationJobFromResult(supabase, job?.id, autoStatus);
-    } catch (error) {
-      if (job?.id) await supabase.from("automation_jobs").update({ status: "failed", last_error: error instanceof Error ? error.message : "Auto-reply failed.", updated_at: new Date().toISOString() }).eq("id", job.id);
-    }
+    await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: trigger.uuid });
   }
 }
 
@@ -214,6 +202,7 @@ export async function POST(request: Request) {
     if (organizationId && creatorProfileId) {
       try {
         if (connection) await processWebhookEvent(supabase, safe, connection);
+        after(() => processAutomationQueue(3).catch(() => undefined));
         await supabase.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), last_error: null }).eq("external_event_id", safe.id).eq("event_type", safe.type);
       } catch (error) {
         await supabase.from("webhook_events").update({ status: "failed", last_error: error instanceof Error ? error.message : "Webhook processor failed." }).eq("external_event_id", safe.id).eq("event_type", safe.type);

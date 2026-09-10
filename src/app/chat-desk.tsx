@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ConversationSendForm, StopAiButton, UnsendMessageButton } from "@/app/inbox-actions";
+import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 export type ChatDeskMessage = { body: string | null; created_at: string; external_uuid: string | null; sender_type: "fan" | "creator" | "system" };
 export type ChatDeskConversation = {
@@ -18,9 +19,18 @@ export type ChatDeskConversation = {
   messages: ChatDeskMessage[];
 };
 
-export function ChatDesk({ conversations }: { conversations: ChatDeskConversation[] }) {
+type RealtimeMessageRow = ChatDeskMessage & { conversation_id: string; organization_id: string };
+type RealtimeConversationRow = { id: string; status: string; unread_count: number | null; organization_id: string };
+
+function sortConversations(items: ChatDeskConversation[]) {
+  return [...items].sort((a, b) => (b.messages.at(-1)?.created_at ?? "").localeCompare(a.messages.at(-1)?.created_at ?? ""));
+}
+
+export function ChatDesk({ conversations, organizationId }: { conversations: ChatDeskConversation[]; organizationId: string }) {
   const router = useRouter();
+  const [liveConversations, setLiveConversations] = useState(conversations);
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "");
+  const [realtimeState, setRealtimeState] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "unread" | "paused">("all");
   const [draft, setDraft] = useState("");
@@ -28,23 +38,61 @@ export function ChatDesk({ conversations }: { conversations: ChatDeskConversatio
   const [draftBusy, setDraftBusy] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const filteredConversations = useMemo(() => conversations.filter((conversation) => {
+  const filteredConversations = useMemo(() => liveConversations.filter((conversation) => {
     const matchesQuery = `${conversation.fanName} ${conversation.fanHandle ?? ""}`.toLowerCase().includes(query.toLowerCase());
     const matchesFilter = filter === "all" || (filter === "unread" && conversation.unreadCount > 0) || (filter === "paused" && conversation.automationPaused);
     return matchesQuery && matchesFilter;
-  }), [conversations, filter, query]);
+  }), [liveConversations, filter, query]);
   const selected = filteredConversations.find((conversation) => conversation.id === selectedId) ?? filteredConversations[0] ?? null;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [selected?.id]);
+  }, [selected?.id, selected?.messages.length]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
+    const supabase = createSupabaseBrowserClient();
+    const channel = supabase
+      .channel(`inbox:${organizationId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `organization_id=eq.${organizationId}` }, (payload) => {
+        const row = payload.new as RealtimeMessageRow;
+        setLiveConversations((current) => sortConversations(current.map((conversation) => {
+          if (conversation.id !== row.conversation_id) return conversation;
+          const exists = conversation.messages.some((message) => message.external_uuid && message.external_uuid === row.external_uuid);
+          const messages = exists ? conversation.messages : [...conversation.messages, { body: row.body, created_at: row.created_at, external_uuid: row.external_uuid, sender_type: row.sender_type }].sort((a, b) => a.created_at.localeCompare(b.created_at));
+          return { ...conversation, latestMessage: row.body ?? conversation.latestMessage, messages };
+        })));
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversations", filter: `organization_id=eq.${organizationId}` }, (payload) => {
+        const row = payload.new as RealtimeConversationRow;
+        setLiveConversations((current) => current.map((conversation) => conversation.id === row.id ? {
+          ...conversation,
+          status: row.status,
+          unreadCount: row.unread_count ?? conversation.unreadCount,
+          automationPaused: row.status !== "ai_active" || conversation.automationPaused,
+        } : conversation));
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "automation_jobs", filter: `organization_id=eq.${organizationId}` }, () => {
+        router.refresh();
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "conversations", filter: `organization_id=eq.${organizationId}` }, () => {
+        router.refresh();
+      })
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") setRealtimeState("live");
+        if (status === "CHANNEL_ERROR") setRealtimeState("offline");
+        if (status === "TIMED_OUT") setRealtimeState("reconnecting");
+        if (status === "CLOSED") setRealtimeState("offline");
+      });
+
+    const reconciliation = window.setInterval(() => {
       if (document.visibilityState === "visible") router.refresh();
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [router]);
+    }, 60000);
+
+    return () => {
+      window.clearInterval(reconciliation);
+      supabase.removeChannel(channel);
+    };
+  }, [organizationId, router]);
 
   if (!selected) return null;
 
@@ -97,6 +145,7 @@ export function ChatDesk({ conversations }: { conversations: ChatDeskConversatio
       </button>)}
     </aside>
     <section className="chat-thread">
+      <span className={`realtime-state ${realtimeState}`}>Realtime: {realtimeState}</span>
       <header><div><strong>{selected.fanName}</strong><span>{selected.fanHandle ? `@${selected.fanHandle}` : "Fanvue fan"} · {selected.status}</span></div><StopAiButton conversationId={selected.id} disabled={selected.automationPaused} /></header>
       <div className="chat-bubbles">
         {selected.messages.length ? selected.messages.map((message) => <div className={`chat-bubble ${message.sender_type === "fan" ? "fan" : "bot"}`} key={message.external_uuid ?? `${message.created_at}-${message.body}`}>

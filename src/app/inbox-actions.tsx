@@ -33,9 +33,6 @@ export function LiveInboxRefresh() {
   const syncingRef = useRef(false);
 
   useEffect(() => {
-    const refreshInterval = window.setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, 1000);
     const syncInterval = window.setInterval(async () => {
       if (document.visibilityState !== "visible" || syncingRef.current) return;
       syncingRef.current = true;
@@ -45,14 +42,13 @@ export function LiveInboxRefresh() {
       } finally {
         syncingRef.current = false;
       }
-    }, 3000);
+    }, 30000);
     return () => {
-      window.clearInterval(refreshInterval);
       window.clearInterval(syncInterval);
     };
   }, [router]);
 
-  return <span className="live-refresh-pill">Live refresh · 1s · Fanvue sync · 3s</span>;
+  return <span className="live-refresh-pill">Supabase Realtime · fallback sync · 30s</span>;
 }
 
 export function StopAiButton({ conversationId, disabled }: { conversationId: string; disabled: boolean }) {

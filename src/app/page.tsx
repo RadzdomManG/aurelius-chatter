@@ -12,11 +12,12 @@ type DashboardData = {
   conversationCount: number;
   unreadCount: number;
   pendingAiJobs: number;
+  organizationId: string | null;
   conversations: ChatDeskConversation[];
 };
 
 async function getDashboardData(): Promise<DashboardData> {
-  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, pendingAiJobs: 0, conversations: [] };
+  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, pendingAiJobs: 0, organizationId: null, conversations: [] };
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) return empty;
 
   try {
@@ -63,6 +64,7 @@ async function getDashboardData(): Promise<DashboardData> {
       conversationCount: rows.length,
       unreadCount: rows.reduce((total, conversation) => total + conversation.unreadCount, 0),
       pendingAiJobs: pendingAiJobs.count ?? 0,
+      organizationId: membership.organization_id,
       conversations: rows,
     };
   } catch {
@@ -109,7 +111,7 @@ export default async function Home() {
             <Metric label="AI detected" value={String(data.pendingAiJobs)} detail="Pending fan-message jobs" />
           </div>
 
-          {hasActivity ? <ChatDesk conversations={data.conversations} /> : <section className="truth-empty-panel">
+          {hasActivity && data.organizationId ? <ChatDesk key={data.conversations.map((conversation) => `${conversation.id}:${conversation.messages.at(-1)?.external_uuid ?? ""}:${conversation.status}`).join("|")} conversations={data.conversations} organizationId={data.organizationId} /> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>
             <p className="truth-eyebrow">INBOX</p>
             <h2>No fan conversations yet.</h2>
