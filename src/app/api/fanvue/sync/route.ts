@@ -7,6 +7,9 @@ import { after } from "next/server";
 
 export const runtime = "nodejs";
 
+const SYNC_CHAT_LIMIT = 12;
+const SYNC_MESSAGES_PER_CHAT = 8;
+
 async function workspace() {
   return workspaceSession();
 }
@@ -22,7 +25,7 @@ export async function POST() {
 
     const accessToken = await accessTokenForFanvue(supabase, connection);
     const admin = createSupabaseAdminClient();
-    const chats = await fanvueRequest<FanvuePaged<FanvueChat>>("/v1/chats?page=1&size=50", accessToken);
+    const chats = await fanvueRequest<FanvuePaged<FanvueChat>>(`/v1/chats?page=1&size=${SYNC_CHAT_LIMIT}`, accessToken);
     let conversationsImported = 0;
     let messagesImported = 0;
 
@@ -50,7 +53,7 @@ export async function POST() {
       if (conversationError || !conversation) continue;
       conversationsImported += 1;
 
-      const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=25&markAsRead=false`, accessToken);
+      const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=${SYNC_MESSAGES_PER_CHAT}&markAsRead=false`, accessToken);
       let latestFanMessage: { uuid: string; body: string; createdAt: string } | null = null;
       for (const fanvueMessage of messages.data ?? []) {
         if (!fanvueMessage.uuid) continue;

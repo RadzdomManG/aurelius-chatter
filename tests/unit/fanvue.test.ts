@@ -63,8 +63,11 @@ describe("Fanvue security helpers", () => {
 
   it("Fanvue sync imports messages and queues the same auto-reply pipeline", () => {
     const source = readFileSync(join(process.cwd(), "src/app/api/fanvue/sync/route.ts"), "utf8");
-    expect(source).toContain("/v1/chats?page=1&size=50");
+    expect(source).toContain("SYNC_CHAT_LIMIT");
+    expect(source).toContain("SYNC_MESSAGES_PER_CHAT");
+    expect(source).not.toContain("/v1/chats?page=1&size=50");
     expect(source).toContain("markAsRead=false");
+    expect(source).toContain("createSupabaseAdminClient");
     expect(source).toContain("queueLatestAutomationJob");
     expect(source).toContain("processAutomationQueue");
   });

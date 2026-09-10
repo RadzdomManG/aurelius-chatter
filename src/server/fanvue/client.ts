@@ -4,12 +4,46 @@ export class FanvueApiError extends Error {
   constructor(public status: number, public endpoint: string, message: string, public retryAfter?: string) { super(message); }
 }
 
+const FANVUE_REQUEST_TIMEOUT_MS = 12_000;
+const FANVUE_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function fanvueRequest<T>(path: string, accessToken: string, init: RequestInit = {}): Promise<T> {
   const env = serverEnv();
-  const response = await fetch(`${env.fanvueApiBaseUrl}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, "X-Fanvue-API-Version": env.fanvueApiVersion, "Content-Type": "application/json", ...init.headers } });
-  if (!response.ok) throw new FanvueApiError(response.status, path, `Fanvue request failed with ${response.status}`, response.headers.get("retry-after") ?? undefined);
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  const maxAttempts = init.method && init.method !== "GET" ? 1 : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FANVUE_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${env.fanvueApiBaseUrl}${path}`, {
+        ...init,
+        signal: init.signal ?? controller.signal,
+        headers: { Authorization: `Bearer ${accessToken}`, "X-Fanvue-API-Version": env.fanvueApiVersion, "Content-Type": "application/json", ...init.headers },
+      });
+      if (!response.ok) {
+        const retryAfter = response.headers.get("retry-after") ?? undefined;
+        if (attempt < maxAttempts && FANVUE_RETRYABLE_STATUSES.has(response.status)) {
+          await delay(Math.min(Number(retryAfter ?? 1) * 1000, 2000));
+          continue;
+        }
+        throw new FanvueApiError(response.status, path, `Fanvue request failed with ${response.status}`, retryAfter);
+      }
+      if (response.status === 204) return undefined as T;
+      return response.json() as Promise<T>;
+    } catch (error) {
+      if (attempt < maxAttempts && error instanceof Error && error.name === "AbortError") {
+        await delay(500);
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw new FanvueApiError(504, path, "Fanvue request timed out");
 }
 
 export function fanvueAuthorizationUrl(state: string, challenge: string, scopes: string[]) {

@@ -38,6 +38,7 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
   const [draftBusy, setDraftBusy] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const syncingRef = useRef(false);
   const filteredConversations = useMemo(() => liveConversations.filter((conversation) => {
     const matchesQuery = `${conversation.fanName} ${conversation.fanHandle ?? ""}`.toLowerCase().includes(query.toLowerCase());
     const matchesFilter = filter === "all" || (filter === "unread" && conversation.unreadCount > 0) || (filter === "paused" && conversation.automationPaused);
@@ -55,12 +56,15 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
     let channel: ReturnType<typeof supabase.channel> | null = null;
     const stateRef = { current: "connecting" as "connecting" | "live" | "fallback" | "offline" };
     const syncNow = async () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || syncingRef.current) return;
+      syncingRef.current = true;
       try {
         const response = await fetch("/api/fanvue/sync", { method: "POST" });
         if (response.ok) router.refresh();
       } catch {
         if (stateRef.current !== "live") setRealtimeState("offline");
+      } finally {
+        syncingRef.current = false;
       }
     };
 
