@@ -122,6 +122,10 @@ async function maybeAutoReply(supabase: AdminClient, input: {
   const automation = settings ?? { enabled: true, approval_required: false, quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0.7 };
   if (!automation.enabled || automation.approval_required) return "queued";
 
+  const { data: latestMessage } = await supabase.from("messages").select("external_uuid, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (latestMessage?.external_uuid !== input.triggerMessageUuid || latestMessage.sender_type !== "fan") return "queued";
+  if (new Date(latestMessage.created_at).getTime() < Date.now() - 120_000) return "queued";
+
   const now = new Date();
   const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
   const parseTime = (value: unknown) => {
@@ -137,6 +141,8 @@ async function maybeAutoReply(supabase: AdminClient, input: {
   const since = new Date(Date.now() - 3600000).toISOString();
   const { count } = await supabase.from("bot_action_logs").select("id", { count: "exact", head: true }).eq("organization_id", input.organizationId).in("action_type", ["message_send", "ppv_message_send"]).gte("created_at", since);
   if ((count ?? 0) >= Number(automation.max_replies_per_hour ?? 20)) return "queued";
+  const { count: recentConversationReplies } = await supabase.from("bot_action_logs").select("id", { count: "exact", head: true }).eq("organization_id", input.organizationId).eq("conversation_id", input.conversationId).eq("action_type", "message_send").gte("created_at", new Date(Date.now() - 90_000).toISOString());
+  if ((recentConversationReplies ?? 0) > 0) return "queued";
 
   const { data: persona } = await supabase.from("persona_profiles").select("display_name, instructions").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("active", true).maybeSingle();
   const instructions = typeof persona?.instructions === "string" ? persona.instructions.trim() : "";
@@ -194,6 +200,35 @@ async function maybeAutoReply(supabase: AdminClient, input: {
   return "completed";
 }
 
+async function queueLatestAutomationJob(supabase: AdminClient, input: {
+  organizationId: string;
+  creatorProfileId: string;
+  conversationId: string;
+  triggerMessageUuid: string;
+}) {
+  const now = new Date().toISOString();
+  const { data: existing } = await supabase.from("automation_jobs").select("id").eq("organization_id", input.organizationId).eq("conversation_id", input.conversationId).in("status", ["pending", "running"]).limit(1).maybeSingle();
+  if (existing?.id) {
+    const { data } = await supabase.from("automation_jobs").update({
+      status: "pending",
+      trigger_message_uuid: input.triggerMessageUuid,
+      available_at: now,
+      locked_at: null,
+      locked_by: null,
+      last_error: null,
+      updated_at: now,
+    }).eq("id", existing.id).select("id").maybeSingle();
+    return data;
+  }
+  const { data } = await supabase.from("automation_jobs").insert({
+    organization_id: input.organizationId,
+    creator_profile_id: input.creatorProfileId,
+    conversation_id: input.conversationId,
+    trigger_message_uuid: input.triggerMessageUuid,
+  }).select("id").maybeSingle();
+  return data;
+}
+
 async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeof sanitizedEvent>, organizationId: string, creatorProfileId: string) {
   const data = safe.data;
   if (safe.type === "creator.follow.created") {
@@ -236,12 +271,7 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
     created_at: stringValue(data.created_at) ?? new Date().toISOString(),
   }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
   if (!messageError && senderType === "fan" && conversation.status === "ai_active") {
-    const { data: job } = await supabase.from("automation_jobs").insert({
-      organization_id: organizationId,
-      creator_profile_id: creatorProfileId,
-      conversation_id: conversation.conversationId,
-      trigger_message_uuid: messageUuid,
-    }).select("id").maybeSingle();
+    const job = await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: messageUuid });
     try {
       const autoStatus = await maybeAutoReply(supabase, {
         organizationId,
