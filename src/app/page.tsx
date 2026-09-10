@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
 import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
-import { AutoReplySettingsForm, BotAllControls, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
+import { AutoReplySettingsForm, BotAllControls, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, OperatorHealthPanel, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type DashboardData = {
@@ -110,6 +110,8 @@ export default async function Home() {
             <Metric label="Unread" value={String(data.unreadCount)} detail={data.unreadCount ? "Needs attention" : "No unread conversations"} />
             <Metric label="AI detected" value={String(data.pendingAiJobs)} detail="Pending fan-message jobs" />
           </div>
+
+          <OperatorHealthPanel />
 
           {hasActivity && data.organizationId ? <ChatDesk key={data.conversations.map((conversation) => `${conversation.id}:${conversation.messages.at(-1)?.external_uuid ?? ""}:${conversation.status}`).join("|")} conversations={data.conversations} organizationId={data.organizationId} /> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>

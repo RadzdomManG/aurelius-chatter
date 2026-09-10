@@ -69,7 +69,18 @@ describe("Fanvue security helpers", () => {
     expect(source).toContain("markAsRead=false");
     expect(source).toContain("createSupabaseAdminClient");
     expect(source).toContain("queueLatestAutomationJob");
-    expect(source).toContain("processAutomationQueue");
+    expect(source).toContain("const automation = await processAutomationQueue(3)");
+    expect(source).toContain("automationProcessed");
+  });
+
+  it("exposes a tenant-scoped operator health endpoint for live diagnostics", () => {
+    const source = readFileSync(join(process.cwd(), "src/app/api/operator/health/route.ts"), "utf8");
+    expect(source).toContain("workspaceSession");
+    expect(source).toContain("fanvue_connections");
+    expect(source).toContain("webhook_events");
+    expect(source).toContain("automation_jobs");
+    expect(source).toContain("pending");
+    expect(source).toContain("failed");
   });
 
   it("has a durable automation worker and realtime database publication migration", () => {

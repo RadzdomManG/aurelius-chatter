@@ -89,8 +89,9 @@ export async function POST() {
       }
     }
 
+    const automation = await processAutomationQueue(3);
     after(() => processAutomationQueue(10).catch(() => undefined));
-    return Response.json({ synced: true, conversationsImported, messagesImported });
+    return Response.json({ synced: true, conversationsImported, messagesImported, automationProcessed: automation.processed });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Fanvue sync failed.";
     return Response.json({ error: message }, { status: 502 });

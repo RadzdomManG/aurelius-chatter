@@ -51,6 +51,57 @@ export function LiveInboxRefresh() {
   return <span className="live-refresh-pill">Supabase Realtime · fallback sync · 30s</span>;
 }
 
+type OperatorHealth = {
+  fanvue: { connected: boolean; status: string; updatedAt: string | null; tokenExpiresAt: string | null };
+  latestMessage: { senderType: string; createdAt: string } | null;
+  latestWebhook: { eventType: string; status: string; receivedAt: string; processedAt: string | null; lastError: string | null } | null;
+  queue: { pending: number; running: number; failed: number; completed: number };
+};
+
+function timeLabel(value: string | null | undefined) {
+  if (!value) return "Never";
+  return new Date(value).toLocaleString();
+}
+
+export function OperatorHealthPanel() {
+  const [health, setHealth] = useState<OperatorHealth | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      try {
+        const response = await fetch("/api/operator/health");
+        const payload = await response.json() as OperatorHealth & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "Health check failed.");
+        if (mounted) {
+          setHealth(payload);
+          setError("");
+        }
+      } catch (loadError) {
+        if (mounted) setError(loadError instanceof Error ? loadError.message : "Health check failed.");
+      }
+    }
+    void load();
+    const interval = window.setInterval(load, 10_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  if (error) return <section className="operator-health warning"><strong>Operator health</strong><span>{error}</span></section>;
+  if (!health) return <section className="operator-health"><strong>Operator health</strong><span>Checking Fanvue, webhooks, inbox, and queue...</span></section>;
+
+  const healthyQueue = health.queue.failed === 0 && health.queue.running < 3;
+  return <section className="operator-health">
+    <div><strong>Fanvue</strong><span className={health.fanvue.connected ? "health-good" : "health-bad"}>{health.fanvue.status}</span><small>Token expires: {timeLabel(health.fanvue.tokenExpiresAt)}</small></div>
+    <div><strong>Latest inbox message</strong><span>{health.latestMessage ? health.latestMessage.senderType : "none"}</span><small>{timeLabel(health.latestMessage?.createdAt)}</small></div>
+    <div><strong>Latest webhook</strong><span>{health.latestWebhook ? `${health.latestWebhook.eventType} · ${health.latestWebhook.status}` : "none"}</span><small>{timeLabel(health.latestWebhook?.receivedAt)}</small></div>
+    <div><strong>AI queue</strong><span className={healthyQueue ? "health-good" : "health-bad"}>{health.queue.pending} pending · {health.queue.running} running · {health.queue.failed} failed</span><small>{health.queue.completed} completed</small></div>
+  </section>;
+}
+
 export function StopAiButton({ conversationId, disabled }: { conversationId: string; disabled: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
