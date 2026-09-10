@@ -1,6 +1,6 @@
 "use client";
 
-import { Megaphone, PauseCircle, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
+import { Megaphone, PauseCircle, PlayCircle, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -38,7 +38,7 @@ export function LiveInboxRefresh() {
     return () => window.clearInterval(interval);
   }, [router]);
 
-  return <span className="live-refresh-pill">Live refresh · 3s</span>;
+  return <span className="live-refresh-pill">Live refresh · 1s</span>;
 }
 
 export function StopAiButton({ conversationId, disabled }: { conversationId: string; disabled: boolean }) {
@@ -56,6 +56,37 @@ export function StopAiButton({ conversationId, disabled }: { conversationId: str
   }
 
   return <button className="truth-secondary" type="button" onClick={stop} disabled={disabled || busy}><PauseCircle size={15} /> {busy ? "Stopping..." : disabled ? "AI stopped" : "Stop AI"}</button>;
+}
+
+export function BotAllControls() {
+  const router = useRouter();
+  const [busy, setBusy] = useState<"start" | "stop" | null>(null);
+  const [message, setMessage] = useState("");
+
+  async function setAll(mode: "start_all" | "stop_all") {
+    setBusy(mode === "start_all" ? "start" : "stop");
+    setMessage("");
+    try {
+      const response = await fetch("/api/automation/settings", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Bot setting could not be saved.");
+      setMessage(mode === "start_all" ? "Bot started for all fans." : "Bot stopped for all fans.");
+      router.refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Bot setting could not be saved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return <div className="bot-all-controls">
+    <button className="truth-primary" type="button" onClick={() => setAll("start_all")} disabled={busy !== null}><PlayCircle size={15} /> {busy === "start" ? "Starting..." : "Start bot for all"}</button>
+    <button className="truth-secondary" type="button" onClick={() => setAll("stop_all")} disabled={busy !== null}><PauseCircle size={15} /> {busy === "stop" ? "Stopping..." : "Stop bot for all"}</button>
+    {message && <small>{message}</small>}
+  </div>;
 }
 
 export function ConversationSendForm({ conversationId }: { conversationId: string }) {
@@ -259,12 +290,12 @@ export function AutoReplySettingsForm() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Loading automation settings...");
   const [settings, setSettings] = useState({
-    enabled: false,
-    approvalRequired: true,
-    quietHoursStart: "22:00",
-    quietHoursEnd: "08:00",
+    enabled: true,
+    approvalRequired: false,
+    quietHoursStart: "",
+    quietHoursEnd: "",
     maxRepliesPerHour: 20,
-    minConfidence: 0.75,
+    minConfidence: 0,
     ppvAllowed: false,
     maxPpvCents: 50000,
   });
@@ -308,10 +339,10 @@ export function AutoReplySettingsForm() {
 
   return <form className="operator-card" action={submit}>
     <h3>Auto-reply controls</h3>
-    <p>Set safe automation limits. Approval mode keeps AI drafts human-reviewed before Fanvue sends.</p>
+    <p>Simple mode: when bot is ON, new fan messages get an automatic persona-based reply. Stop AI on one fan blocks that fan.</p>
     <div className="operator-checks">
       <label><input name="enabled" type="checkbox" defaultChecked={settings.enabled} /> Auto-reply enabled</label>
-      <label><input name="approvalRequired" type="checkbox" defaultChecked={settings.approvalRequired} /> Require approval</label>
+      <label><input name="approvalRequired" type="checkbox" defaultChecked={settings.approvalRequired} /> Require manual approval</label>
       <label><input name="ppvAllowed" type="checkbox" defaultChecked={settings.ppvAllowed} /> Allow PPV automation</label>
     </div>
     <label>Quiet hours start<input name="quietHoursStart" type="time" defaultValue={settings.quietHoursStart} /></label>

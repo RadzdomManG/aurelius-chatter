@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
 import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
-import { AutoReplySettingsForm, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
+import { AutoReplySettingsForm, BotAllControls, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type DashboardData = {
@@ -99,7 +99,7 @@ export default async function Home() {
         <div className="truth-content">
           <div className="truth-heading">
             <div><p className="truth-eyebrow">CONVERSATION DESK</p><h1>Fan conversations, clearly managed.</h1><p>Only fan accounts appear here. Connected creator accounts are excluded from dashboard counts, sync display, and bot targeting.</p></div>
-            <div className="inbox-top-actions"><LiveInboxRefresh /><SyncFanvueButton /><Link className="truth-primary" href="/models"><Plus size={16} /> Add model</Link></div>
+            <div className="inbox-top-actions"><LiveInboxRefresh /><BotAllControls /><SyncFanvueButton /><Link className="truth-primary" href="/models"><Plus size={16} /> Add model</Link></div>
           </div>
 
           <div className="truth-metrics">

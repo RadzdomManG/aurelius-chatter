@@ -14,7 +14,7 @@ describe("Fanvue operator UI", () => {
     expect(source).toContain("Approve & send");
     expect(source).toContain("creatorMessagesExcluded");
     expect(source).toContain("router.refresh");
-    expect(source).toContain("3000");
+    expect(source).toContain("1000");
   });
 
   it("shows professional analytics metrics and graphs", () => {
@@ -45,7 +45,9 @@ describe("Fanvue operator UI", () => {
     expect(form).toContain("Media vault browser");
     expect(form).toContain("Auto-reply controls");
     expect(form).toContain("RetryJobButton");
-    expect(form).toContain("Live refresh · 3s");
+    expect(form).toContain("Live refresh · 1s");
+    expect(form).toContain("Start bot for all");
+    expect(form).toContain("Stop bot for all");
     expect(mediaRoute).toContain("/media?");
     expect(mediaRoute).toContain("variants");
     expect(settingsRoute).toContain("quietHoursStart");

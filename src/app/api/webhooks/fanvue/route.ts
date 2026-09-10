@@ -3,7 +3,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { buildMemoryContext, estimateContextCharacters } from "@/domain/memory/context";
 import { xaiEnv, serverEnv } from "@/lib/env";
 import { generateReplyDecision } from "@/server/ai/xai";
-import { fanvueRequest } from "@/server/fanvue/client";
+import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
 import { decryptToken, encryptToken } from "@/server/fanvue/encryption";
 import { recordBotActionSafely } from "@/server/operator/logging";
 
@@ -12,6 +12,15 @@ export const runtime = "nodejs";
 type FanvueWebhookData = Record<string, unknown>;
 type FanvueIdentity = { uuid?: string; handle?: string | null; display_name?: string | null; displayName?: string | null };
 type AdminClient = ReturnType<typeof createSupabaseAdminClient>;
+type WebhookConnection = {
+  id: string;
+  organization_id: string;
+  creator_profile_id: string;
+  external_user_uuid: string;
+  encrypted_access_token: string;
+  encrypted_refresh_token: string;
+  access_token_expires_at: string;
+};
 
 function objectValue(value: unknown): FanvueWebhookData {
   return value && typeof value === "object" ? value as FanvueWebhookData : {};
@@ -119,7 +128,7 @@ async function maybeAutoReply(supabase: AdminClient, input: {
   latestFanMessage: string;
 }) {
   const { data: settings } = await supabase.from("automation_settings").select("enabled, approval_required, quiet_hours_start, quiet_hours_end, max_replies_per_hour, min_confidence").eq("organization_id", input.organizationId).is("creator_profile_id", null).maybeSingle();
-  const automation = settings ?? { enabled: true, approval_required: false, quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0.7 };
+  const automation = settings ?? { enabled: true, approval_required: false, quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0 };
   if (!automation.enabled || automation.approval_required) return "queued";
 
   const { data: latestMessage } = await supabase.from("messages").select("external_uuid, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -165,7 +174,7 @@ async function maybeAutoReply(supabase: AdminClient, input: {
     maxPromptCharacters: env.maxPromptCharacters,
   });
   const decision = await generateReplyDecision(contextValue);
-  if (decision.action !== "reply" || !decision.replyText?.trim() || decision.confidence < Number(automation.min_confidence ?? 0.7)) return "queued";
+  if (decision.action !== "reply" || !decision.replyText?.trim() || decision.confidence < Number(automation.min_confidence ?? 0)) return "queued";
 
   const { data: connection } = await supabase.from("fanvue_connections").select("id, encrypted_access_token, encrypted_refresh_token, access_token_expires_at, external_user_uuid").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("status", "healthy").maybeSingle();
   if (!connection || input.fanUuid === connection.external_user_uuid) return "queued";
@@ -200,6 +209,35 @@ async function maybeAutoReply(supabase: AdminClient, input: {
   return "completed";
 }
 
+async function syncRecentFanvueMessages(supabase: AdminClient, connection: WebhookConnection, conversation: { conversationId: string }, fanUuid: string) {
+  const accessToken = await accessTokenForWebhook(supabase, connection);
+  const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=10&markAsRead=false`, accessToken);
+  let latestFanMessage: { uuid: string; body: string; createdAt: string } | null = null;
+  for (const fanvueMessage of messages.data ?? []) {
+    if (!fanvueMessage.uuid) continue;
+    const body = fanvueMessageBody(fanvueMessage);
+    if (!body) continue;
+    const createdAt = fanvueMessageCreatedAt(fanvueMessage);
+    const senderType = fanvueSenderType(fanvueMessage, connection.external_user_uuid);
+    await supabase.from("messages").upsert({
+      organization_id: connection.organization_id,
+      creator_profile_id: connection.creator_profile_id,
+      conversation_id: conversation.conversationId,
+      external_uuid: fanvueMessage.uuid,
+      sender_type: senderType,
+      body,
+      created_at: createdAt,
+    }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+    if (senderType === "fan" && (!latestFanMessage || new Date(createdAt).getTime() > new Date(latestFanMessage.createdAt).getTime())) {
+      latestFanMessage = { uuid: fanvueMessage.uuid, body, createdAt };
+    }
+  }
+  if (latestFanMessage) {
+    await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.conversationId);
+  }
+  return latestFanMessage;
+}
+
 async function queueLatestAutomationJob(supabase: AdminClient, input: {
   organizationId: string;
   creatorProfileId: string;
@@ -229,7 +267,9 @@ async function queueLatestAutomationJob(supabase: AdminClient, input: {
   return data;
 }
 
-async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeof sanitizedEvent>, organizationId: string, creatorProfileId: string) {
+async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeof sanitizedEvent>, connection: WebhookConnection) {
+  const organizationId = connection.organization_id;
+  const creatorProfileId = connection.creator_profile_id;
   const data = safe.data;
   if (safe.type === "creator.follow.created") {
     await ensureFanConversation(supabase, {
@@ -259,19 +299,26 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
   });
   const messageUuid = stringValue(data.uuid);
   const text = stringValue(data.text);
-  if (!conversation || !messageUuid || !text) return;
-  const senderType = data.sender === "creator" || safe.type === "creator.message.sent" ? "creator" : "fan";
-  const { error: messageError } = await supabase.from("messages").upsert({
-    organization_id: organizationId,
-    creator_profile_id: creatorProfileId,
-    conversation_id: conversation.conversationId,
-    external_uuid: messageUuid,
-    sender_type: senderType,
-    body: text,
-    created_at: stringValue(data.created_at) ?? new Date().toISOString(),
-  }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+  if (!conversation) return;
+  const senderType = safe.type === "creator.message.received" ? "fan" : "creator";
+  let messageError = null;
+  if (messageUuid && text) {
+    const result = await supabase.from("messages").upsert({
+      organization_id: organizationId,
+      creator_profile_id: creatorProfileId,
+      conversation_id: conversation.conversationId,
+      external_uuid: messageUuid,
+      sender_type: senderType,
+      body: text,
+      created_at: stringValue(data.created_at) ?? new Date().toISOString(),
+    }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+    messageError = result.error;
+  }
+  const syncedLatest = senderType === "fan" ? await syncRecentFanvueMessages(supabase, connection, conversation, conversation.fanUuid).catch(() => null) : null;
+  const trigger = syncedLatest ?? (messageUuid && text ? { uuid: messageUuid, body: text, createdAt: stringValue(data.created_at) ?? new Date().toISOString() } : null);
+  if (!trigger) return;
   if (!messageError && senderType === "fan" && conversation.status === "ai_active") {
-    const job = await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: messageUuid });
+    const job = await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: trigger.uuid });
     try {
       const autoStatus = await maybeAutoReply(supabase, {
         organizationId,
@@ -279,8 +326,8 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
         conversationId: conversation.conversationId,
         fanId: conversation.fanId,
         fanUuid: conversation.fanUuid,
-        triggerMessageUuid: messageUuid,
-        latestFanMessage: text,
+        triggerMessageUuid: trigger.uuid,
+        latestFanMessage: trigger.body,
       });
       if (job?.id && autoStatus === "completed") await supabase.from("automation_jobs").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", job.id);
     } catch (error) {
@@ -301,8 +348,10 @@ export async function POST(request: Request) {
     const supabase = createSupabaseAdminClient();
     let organizationId: string | null = null;
     let creatorProfileId: string | null = null;
+    let connection: WebhookConnection | null = null;
     if (safe.creatorUuid) {
-      const { data: connection } = await supabase.from("fanvue_connections").select("organization_id, creator_profile_id").eq("external_user_uuid", safe.creatorUuid).eq("status", "healthy").maybeSingle();
+      const { data } = await supabase.from("fanvue_connections").select("id, organization_id, creator_profile_id, external_user_uuid, encrypted_access_token, encrypted_refresh_token, access_token_expires_at").eq("external_user_uuid", safe.creatorUuid).eq("status", "healthy").maybeSingle();
+      connection = data as WebhookConnection | null;
       organizationId = connection?.organization_id ?? null;
       creatorProfileId = connection?.creator_profile_id ?? null;
     }
@@ -312,7 +361,7 @@ export async function POST(request: Request) {
     if (insertError) return Response.json({ error: "Webhook event could not be persisted." }, { status: 503 });
     if (organizationId && creatorProfileId) {
       try {
-        await processWebhookEvent(supabase, safe, organizationId, creatorProfileId);
+        if (connection) await processWebhookEvent(supabase, safe, connection);
         await supabase.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), last_error: null }).eq("external_event_id", safe.id).eq("event_type", safe.type);
       } catch (error) {
         await supabase.from("webhook_events").update({ status: "failed", last_error: error instanceof Error ? error.message : "Webhook processor failed." }).eq("external_event_id", safe.id).eq("event_type", safe.type);
