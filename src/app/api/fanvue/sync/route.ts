@@ -35,6 +35,7 @@ export async function POST() {
       const fanUuid = chat.user?.uuid;
       if (!fanUuid) continue;
       if (fanUuid === connection.external_user_uuid) continue;
+      console.log("FAN_ID_RESOLVED", { source: "sync", fanUuid, creatorProfileId: connection.creator_profile_id, organizationId });
       const { data: fan, error: fanError } = await supabase.from("fans").upsert({
         organization_id: organizationId,
         creator_profile_id: connection.creator_profile_id,
@@ -53,6 +54,7 @@ export async function POST() {
         last_message_at: chat.lastMessage?.createdAt ?? new Date().toISOString(),
       }, { onConflict: "creator_profile_id,fan_id" }).select("id").single();
       if (conversationError || !conversation) continue;
+      console.log("CONVERSATION_RESOLVED", { source: "sync", conversationId: conversation.id, fanUuid, creatorProfileId: connection.creator_profile_id });
       conversationsImported += 1;
 
       const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=${SYNC_MESSAGES_PER_CHAT}&markAsRead=false`, accessToken).catch(() => null);
@@ -64,6 +66,7 @@ export async function POST() {
         if (!body) continue;
         const createdAt = fanvueMessageCreatedAt(fanvueMessage);
         const senderType = fanvueSenderType(fanvueMessage, connection.external_user_uuid);
+        console.log("MESSAGE_DIRECTION_RESOLVED", { source: "sync", externalMessageUuid: fanvueMessage.uuid, senderType, conversationId: conversation.id });
         const { error: messageError } = await supabase.from("messages").upsert({
           organization_id: organizationId,
           creator_profile_id: connection.creator_profile_id,
@@ -73,7 +76,10 @@ export async function POST() {
           body,
           created_at: createdAt,
         }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
-        if (!messageError) messagesImported += 1;
+        if (!messageError) {
+          messagesImported += 1;
+          console.log("MESSAGE_INSERTED", { source: "sync", externalMessageUuid: fanvueMessage.uuid, senderType, conversationId: conversation.id });
+        }
         if (senderType === "fan" && (!latestFanMessage || new Date(createdAt).getTime() > new Date(latestFanMessage.createdAt).getTime())) {
           latestFanMessage = { uuid: fanvueMessage.uuid, body, createdAt };
         }

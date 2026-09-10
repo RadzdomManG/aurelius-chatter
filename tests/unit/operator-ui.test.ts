@@ -13,9 +13,10 @@ describe("Fanvue operator UI", () => {
     expect(source).toContain("Generate AI draft");
     expect(source).toContain("Approve & send");
     expect(source).toContain("creatorMessagesExcluded");
-    expect(source).toContain("router.refresh");
     expect(source).toContain("postgres_changes");
-    expect(source).toContain("60000");
+    expect(source).toContain("/api/inbox/changes");
+    expect(source).toContain("mergeMessage");
+    expect(source).not.toContain("60000");
     expect(source).toContain("fallback");
     expect(source).toContain("Live via Fanvue sync");
     expect(source).toContain("3000");
@@ -50,7 +51,8 @@ describe("Fanvue operator UI", () => {
     expect(form).toContain("Auto-reply controls");
     expect(form).toContain("RetryJobButton");
     expect(form).toContain("Supabase Realtime");
-    expect(form).toContain("30000");
+    expect(form).toContain("3000");
+    expect(form).toContain("fallback sync · 3s");
     expect(form).toContain("Start bot for all");
     expect(form).toContain("Stop bot for all");
     expect(mediaRoute).toContain("/media?");

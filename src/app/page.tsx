@@ -33,7 +33,7 @@ async function getDashboardData(): Promise<DashboardData> {
 
     const [models, conversationRows, pendingAiJobs] = await Promise.all([
       supabase.from("creator_profiles").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
-      supabase.from("conversations").select("id, status, unread_count, fans(display_name, handle, automation_paused, external_uuid), messages(body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(20),
+      supabase.from("conversations").select("id, status, unread_count, updated_at, fans(display_name, handle, automation_paused, external_uuid), messages(id, body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(20),
       supabase.from("automation_jobs").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id).eq("status", "pending"),
     ]);
 
@@ -53,6 +53,7 @@ async function getDashboardData(): Promise<DashboardData> {
         fanHandle: fan?.handle ?? null,
         latestMessage: messages.at(-1)?.body ?? null,
         automationPaused: Boolean(fan?.automation_paused) || conversation.status !== "ai_active",
+        updatedAt: conversation.updated_at,
         messages,
       }];
     });

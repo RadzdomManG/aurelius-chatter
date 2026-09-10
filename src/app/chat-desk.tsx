@@ -1,13 +1,12 @@
 "use client";
 
 import { Bot, Sparkles } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ConversationSendForm, StopAiButton, UnsendMessageButton } from "@/app/inbox-actions";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
-export type ChatDeskMessage = { body: string | null; created_at: string; external_uuid: string | null; sender_type: "fan" | "creator" | "system" };
+export type ChatDeskMessage = { id: string; body: string | null; created_at: string; external_uuid: string | null; sender_type: "fan" | "creator" | "system" };
 export type ChatDeskConversation = {
   id: string;
   status: string;
@@ -16,18 +15,27 @@ export type ChatDeskConversation = {
   fanHandle: string | null;
   latestMessage: string | null;
   automationPaused: boolean;
+  updatedAt?: string | null;
   messages: ChatDeskMessage[];
 };
 
 type RealtimeMessageRow = ChatDeskMessage & { conversation_id: string; organization_id: string };
 type RealtimeConversationRow = { id: string; status: string; unread_count: number | null; organization_id: string };
+type InboxChanges = {
+  conversations?: Array<{ id: string; status: string; unreadCount: number; fanName: string; fanHandle: string | null; automationPaused: boolean; lastMessageAt: string | null; updatedAt: string | null }>;
+  messages?: Array<{ id: string; conversationId: string; body: string | null; createdAt: string; externalUuid: string | null; senderType: "fan" | "creator" | "system" }>;
+};
+
+function mergeMessage(messages: ChatDeskMessage[], incoming: ChatDeskMessage) {
+  const exists = messages.some((message) => (incoming.id && message.id === incoming.id) || (incoming.external_uuid && message.external_uuid === incoming.external_uuid));
+  return exists ? messages : [...messages, incoming].sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
 
 function sortConversations(items: ChatDeskConversation[]) {
   return [...items].sort((a, b) => (b.messages.at(-1)?.created_at ?? "").localeCompare(a.messages.at(-1)?.created_at ?? ""));
 }
 
 export function ChatDesk({ conversations, organizationId }: { conversations: ChatDeskConversation[]; organizationId: string }) {
-  const router = useRouter();
   const [liveConversations, setLiveConversations] = useState(conversations);
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "");
   const [realtimeState, setRealtimeState] = useState<"connecting" | "live" | "fallback" | "offline">("connecting");
@@ -39,6 +47,9 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
   const [sendBusy, setSendBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const syncingRef = useRef(false);
+  const changesRef = useRef(false);
+  const liveConversationsRef = useRef(liveConversations);
+  const selectedIdRef = useRef(selectedId);
   const filteredConversations = useMemo(() => liveConversations.filter((conversation) => {
     const matchesQuery = `${conversation.fanName} ${conversation.fanHandle ?? ""}`.toLowerCase().includes(query.toLowerCase());
     const matchesFilter = filter === "all" || (filter === "unread" && conversation.unreadCount > 0) || (filter === "paused" && conversation.automationPaused);
@@ -51,16 +62,73 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
   }, [selected?.id, selected?.messages.length]);
 
   useEffect(() => {
+    liveConversationsRef.current = liveConversations;
+  }, [liveConversations]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
     const supabase = createSupabaseBrowserClient();
     let active = true;
     let channel: ReturnType<typeof supabase.channel> | null = null;
     const stateRef = { current: "connecting" as "connecting" | "live" | "fallback" | "offline" };
+    const latestConversationCursor = () => liveConversationsRef.current.reduce((latest, conversation) => {
+      const timestamp = conversation.updatedAt ?? conversation.messages.at(-1)?.created_at ?? "";
+      return timestamp > latest ? timestamp : latest;
+    }, "");
+    const latestMessageCursor = () => liveConversationsRef.current.flatMap((conversation) => conversation.messages).reduce((latest, message) => message.created_at > latest ? message.created_at : latest, "");
+    const fetchInboxChanges = async () => {
+      if (document.visibilityState !== "visible" || changesRef.current) return;
+      changesRef.current = true;
+      try {
+        const params = new URLSearchParams();
+        const conversationCursor = latestConversationCursor();
+        const messageCursor = latestMessageCursor();
+        if (conversationCursor) params.set("sinceConversation", conversationCursor);
+        if (messageCursor) params.set("sinceMessage", messageCursor);
+        if (selectedIdRef.current) params.set("conversationId", selectedIdRef.current);
+        const response = await fetch(`/api/inbox/changes?${params.toString()}`);
+        const payload = await response.json() as InboxChanges;
+        if (!response.ok) return;
+        if ((payload.messages?.length ?? 0) > 0 || (payload.conversations?.length ?? 0) > 0) {
+          console.log("[Aurelius Realtime] POLL_RECEIVED", { conversations: payload.conversations?.length ?? 0, messages: payload.messages?.length ?? 0 });
+        }
+        setLiveConversations((current) => {
+          const byId = new Map(current.map((conversation) => [conversation.id, conversation]));
+          for (const conversation of payload.conversations ?? []) {
+            const existing = byId.get(conversation.id);
+            byId.set(conversation.id, {
+              id: conversation.id,
+              status: conversation.status,
+              unreadCount: conversation.unreadCount,
+              fanName: conversation.fanName,
+              fanHandle: conversation.fanHandle,
+              latestMessage: existing?.latestMessage ?? null,
+              automationPaused: conversation.automationPaused,
+              updatedAt: conversation.updatedAt,
+              messages: existing?.messages ?? [],
+            });
+          }
+          for (const message of payload.messages ?? []) {
+            const existing = byId.get(message.conversationId);
+            if (!existing) continue;
+            const mergedMessages = mergeMessage(existing.messages, { id: message.id, body: message.body, created_at: message.createdAt, external_uuid: message.externalUuid, sender_type: message.senderType });
+            byId.set(message.conversationId, { ...existing, latestMessage: mergedMessages.at(-1)?.body ?? existing.latestMessage, messages: mergedMessages });
+          }
+          return sortConversations([...byId.values()]);
+        });
+      } finally {
+        changesRef.current = false;
+      }
+    };
     const syncNow = async () => {
       if (document.visibilityState !== "visible" || syncingRef.current) return;
       syncingRef.current = true;
       try {
         const response = await fetch("/api/fanvue/sync", { method: "POST" });
-        if (response.ok) router.refresh();
+        if (response.ok) await fetchInboxChanges();
       } catch {
         if (stateRef.current !== "live") setRealtimeState("offline");
       } finally {
@@ -76,32 +144,36 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
       .channel(`inbox:${organizationId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `organization_id=eq.${organizationId}` }, (payload) => {
         const row = payload.new as RealtimeMessageRow;
+        console.log("[Aurelius Realtime] MESSAGE_RECEIVED", { messageId: row.id, externalUuid: row.external_uuid, conversationId: row.conversation_id, senderType: row.sender_type });
         setLiveConversations((current) => sortConversations(current.map((conversation) => {
           if (conversation.id !== row.conversation_id) return conversation;
-          const exists = conversation.messages.some((message) => message.external_uuid && message.external_uuid === row.external_uuid);
-          const messages = exists ? conversation.messages : [...conversation.messages, { body: row.body, created_at: row.created_at, external_uuid: row.external_uuid, sender_type: row.sender_type }].sort((a, b) => a.created_at.localeCompare(b.created_at));
+          const messages = mergeMessage(conversation.messages, { id: row.id, body: row.body, created_at: row.created_at, external_uuid: row.external_uuid, sender_type: row.sender_type });
           return { ...conversation, latestMessage: row.body ?? conversation.latestMessage, messages };
         })));
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversations", filter: `organization_id=eq.${organizationId}` }, (payload) => {
         const row = payload.new as RealtimeConversationRow;
+        console.log("[Aurelius Realtime] CONVERSATION_UPDATED", { conversationId: row.id, status: row.status, unreadCount: row.unread_count });
         setLiveConversations((current) => current.map((conversation) => conversation.id === row.id ? {
           ...conversation,
           status: row.status,
           unreadCount: row.unread_count ?? conversation.unreadCount,
           automationPaused: row.status !== "ai_active" || conversation.automationPaused,
+          updatedAt: new Date().toISOString(),
         } : conversation));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "automation_jobs", filter: `organization_id=eq.${organizationId}` }, () => {
-        router.refresh();
+        void fetchInboxChanges();
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "conversations", filter: `organization_id=eq.${organizationId}` }, () => {
-        router.refresh();
+        void fetchInboxChanges();
       })
       .subscribe((status) => {
+        console.log("[Aurelius Realtime] CHANNEL_STATUS", { status });
         if (status === "SUBSCRIBED") {
           stateRef.current = "live";
           setRealtimeState("live");
+          void fetchInboxChanges();
         }
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
           stateRef.current = "fallback";
@@ -114,20 +186,29 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
     void subscribe();
 
     const reconciliation = window.setInterval(() => {
-      if (stateRef.current === "live" && document.visibilityState === "visible") router.refresh();
-    }, 60000);
-    const fallbackSync = window.setInterval(() => {
-      if (stateRef.current !== "live") void syncNow();
+      void fetchInboxChanges();
     }, 3000);
+    const fallbackSync = window.setInterval(() => {
+      void syncNow();
+    }, 3000);
+    const recover = () => {
+      void syncNow();
+      void fetchInboxChanges();
+    };
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", recover);
     void syncNow();
+    void fetchInboxChanges();
 
     return () => {
       active = false;
       window.clearInterval(reconciliation);
       window.clearInterval(fallbackSync);
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", recover);
       if (channel) supabase.removeChannel(channel);
     };
-  }, [organizationId, router]);
+  }, [organizationId]);
 
   if (!selected) return null;
 

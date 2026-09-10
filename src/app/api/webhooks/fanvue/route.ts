@@ -125,6 +125,8 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
   const organizationId = connection.organization_id;
   const creatorProfileId = connection.creator_profile_id;
   const data = safe.data;
+  console.log("FANVUE_MESSAGE_RECEIVED", { source: "webhook", eventType: safe.type, messageUuid: safe.safePayload.messageUuid, creatorProfileId, organizationId });
+  console.log("CREATOR_ID_RESOLVED", { source: "webhook", creatorUuid: safe.creatorUuid, creatorProfileId, organizationId });
   if (safe.type === "creator.follow.created") {
     await ensureFanConversation(supabase, {
       organizationId,
@@ -144,6 +146,7 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
 
   if (safe.type !== "creator.message.received" && safe.type !== "creator.message.sent") return;
   const fan = identityValue(data.fan);
+  console.log("FAN_ID_RESOLVED", { source: "webhook", fanUuid: fan.uuid, creatorProfileId, organizationId });
   const conversation = await ensureFanConversation(supabase, {
     organizationId,
     creatorProfileId,
@@ -154,7 +157,9 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
   const messageUuid = stringValue(data.uuid);
   const text = stringValue(data.text);
   if (!conversation) return;
+  console.log("CONVERSATION_RESOLVED", { source: "webhook", conversationId: conversation.conversationId, fanUuid: conversation.fanUuid, creatorProfileId });
   const senderType = safe.type === "creator.message.received" ? "fan" : "creator";
+  console.log("MESSAGE_DIRECTION_RESOLVED", { source: "webhook", externalMessageUuid: messageUuid, senderType });
   let messageError = null;
   if (messageUuid && text) {
     const result = await supabase.from("messages").upsert({
@@ -167,6 +172,7 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
       created_at: stringValue(data.created_at) ?? new Date().toISOString(),
     }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
     messageError = result.error;
+    if (!messageError) console.log("MESSAGE_INSERTED", { source: "webhook", externalMessageUuid: messageUuid, senderType, conversationId: conversation.conversationId });
   }
   const syncedLatest = senderType === "fan" ? await syncRecentFanvueMessages(supabase, connection, conversation, conversation.fanUuid).catch(() => null) : null;
   const trigger = syncedLatest ?? (messageUuid && text ? { uuid: messageUuid, body: text, createdAt: stringValue(data.created_at) ?? new Date().toISOString() } : null);

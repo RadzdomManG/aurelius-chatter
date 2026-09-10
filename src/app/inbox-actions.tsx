@@ -42,13 +42,13 @@ export function LiveInboxRefresh() {
       } finally {
         syncingRef.current = false;
       }
-    }, 30000);
+    }, 3000);
     return () => {
       window.clearInterval(syncInterval);
     };
   }, [router]);
 
-  return <span className="live-refresh-pill">Supabase Realtime · fallback sync · 30s</span>;
+  return <span className="live-refresh-pill">Supabase Realtime · fallback sync · 3s</span>;
 }
 
 type OperatorHealth = {
