@@ -1,4 +1,5 @@
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueChat, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { accessTokenForFanvue, healthyFanvueConnection, workspaceSession } from "@/server/fanvue/session";
 import { queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
 import { processAutomationQueue } from "@/server/automation/worker";
@@ -20,6 +21,7 @@ export async function POST() {
     if (!connection) return Response.json({ error: "Connect Fanvue before syncing." }, { status: 404 });
 
     const accessToken = await accessTokenForFanvue(supabase, connection);
+    const admin = createSupabaseAdminClient();
     const chats = await fanvueRequest<FanvuePaged<FanvueChat>>("/v1/chats?page=1&size=50", accessToken);
     let conversationsImported = 0;
     let messagesImported = 0;
@@ -73,7 +75,7 @@ export async function POST() {
 
       if (latestFanMessage && !fan.automation_paused) {
         await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.id).eq("organization_id", organizationId);
-        await queueLatestAutomationJob(supabase, {
+        await queueLatestAutomationJob(admin, {
           organizationId,
           creatorProfileId: connection.creator_profile_id,
           conversationId: conversation.id,
