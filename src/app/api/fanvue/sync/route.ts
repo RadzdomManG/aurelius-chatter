@@ -10,6 +10,7 @@ export const maxDuration = 60;
 
 const SYNC_CHAT_LIMIT = 12;
 const SYNC_MESSAGES_PER_CHAT = 8;
+const AUTO_REPLY_FRESHNESS_MS = 300_000;
 
 async function workspace() {
   return workspaceSession();
@@ -78,7 +79,8 @@ export async function POST() {
         }
       }
 
-      if (latestFanMessage && !fan.automation_paused) {
+      const latestFanMessageIsFresh = latestFanMessage && new Date(latestFanMessage.createdAt).getTime() >= Date.now() - AUTO_REPLY_FRESHNESS_MS;
+      if (latestFanMessage && !fan.automation_paused && latestFanMessageIsFresh) {
         await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.id).eq("organization_id", organizationId);
         await queueLatestAutomationJob(admin, {
           organizationId,
