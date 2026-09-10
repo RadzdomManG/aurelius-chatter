@@ -3,7 +3,12 @@ import { replyDecisionSchema, memoryExtractionSchema, type ReplyDecision, type M
 import type { MemoryContext } from "@/domain/memory/types";
 import { ZodError } from "zod";
 
-export class XaiProviderError extends Error {}
+export class XaiProviderError extends Error {
+  constructor(message: string, public retryable = false, public status?: number) { super(message); }
+}
+
+const XAI_TIMEOUT_MS = 12_000;
+const XAI_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 function promptFor(context: MemoryContext, task: "reply" | "memory"): string {
   const contract = task === "reply"
@@ -15,7 +20,23 @@ function promptFor(context: MemoryContext, task: "reply" | "memory"): string {
 async function complete(context: MemoryContext, task: "reply" | "memory"): Promise<unknown> {
   const env = xaiEnv();
   if (!env.apiKey) throw new XaiProviderError("XAI_API_KEY is required to enable AI generation.");
-  const response = await fetch(`${env.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.35, max_tokens: env.maxOutputTokens, response_format: { type: "json_object" }, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
+  let response: Response | null = null;
+  let lastNetworkError = "unknown";
+  const configuredBaseUrl = env.baseUrl.replace(/\/$/, "");
+  const baseUrls = [...new Set([configuredBaseUrl, "https://api.x.ai/v1", "https://us-east-1.api.x.ai/v1"])];
+  for (let attempt = 0; attempt < baseUrls.length; attempt += 1) {
+    try {
+      response = await fetch(`${baseUrls[attempt]}/chat/completions`, { method: "POST", signal: AbortSignal.timeout(XAI_TIMEOUT_MS), headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.model, temperature: 0.35, max_tokens: env.maxOutputTokens, response_format: { type: "json_object" }, messages: [{ role: "system", content: promptFor(context, task) }, { role: "user", content: context.latestFanMessage }] }) });
+      if (response.ok || !XAI_RETRYABLE_STATUSES.has(response.status) || attempt === baseUrls.length - 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    } catch (error) {
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
+      lastNetworkError = cause?.message ?? (error instanceof Error ? error.message : "unknown");
+      if (attempt === baseUrls.length - 1) throw new XaiProviderError(error instanceof Error && error.name === "TimeoutError" ? "xAI request timed out." : `xAI network request failed: ${lastNetworkError}`, true);
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+  if (!response) throw new XaiProviderError("xAI request failed before receiving a response.", true);
   if (!response.ok) {
     const errorBody = await response.text();
     let providerMessage = "";
@@ -25,7 +46,7 @@ async function complete(context: MemoryContext, task: "reply" | "memory"): Promi
     } catch {
       providerMessage = "";
     }
-    throw new XaiProviderError(`xAI request failed with ${response.status}${providerMessage ? `: ${providerMessage}` : "."}`);
+    throw new XaiProviderError(`xAI request failed with ${response.status}${providerMessage ? `: ${providerMessage}` : "."}`, XAI_RETRYABLE_STATUSES.has(response.status), response.status);
   }
   const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const content = payload.choices?.[0]?.message?.content;

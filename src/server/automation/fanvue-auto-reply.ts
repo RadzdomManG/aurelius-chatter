@@ -5,10 +5,12 @@ import { generateReplyDecision } from "@/server/ai/xai";
 import { fanvueRequest } from "@/server/fanvue/client";
 import { decryptToken, encryptToken } from "@/server/fanvue/encryption";
 import { recordBotActionSafely } from "@/server/operator/logging";
+import { logActivity, type ActivityEvent } from "@/server/activity/log";
 
 type AutoReplySupabase = SupabaseClient;
 
 type AutoReplyInput = {
+  jobId: string;
   organizationId: string;
   creatorProfileId: string;
   conversationId: string;
@@ -16,10 +18,11 @@ type AutoReplyInput = {
   fanUuid: string;
   triggerMessageUuid: string;
   latestFanMessage: string;
+  traceId: string;
 };
 
 export type AutoReplyResult =
-  | { status: "completed"; externalUuid?: string | null }
+  | { status: "completed"; externalUuid?: string | null; generatedReply?: string; grokLatencyMs?: number }
   | { status: "queued"; reason: string; retryAfterSeconds?: number }
   | { status: "cancelled"; reason: string };
 
@@ -69,34 +72,31 @@ export async function queueLatestAutomationJob(supabase: AutoReplySupabase, inpu
   creatorProfileId: string;
   conversationId: string;
   triggerMessageUuid: string;
+  debounceSeconds?: number;
 }) {
-  const now = new Date().toISOString();
-  const { data: existing } = await supabase.from("automation_jobs").select("id").eq("organization_id", input.organizationId).eq("conversation_id", input.conversationId).in("status", ["pending", "running"]).limit(1).maybeSingle();
-  if (existing?.id) {
-    const { data } = await supabase.from("automation_jobs").update({
-      status: "pending",
-      trigger_message_uuid: input.triggerMessageUuid,
-      available_at: now,
-      locked_at: null,
-      locked_by: null,
-      last_error: null,
-      updated_at: now,
-    }).eq("id", existing.id).select("id").maybeSingle();
-    return data;
-  }
-  const { data } = await supabase.from("automation_jobs").insert({
-    organization_id: input.organizationId,
-    creator_profile_id: input.creatorProfileId,
-    conversation_id: input.conversationId,
-    trigger_message_uuid: input.triggerMessageUuid,
-  }).select("id").maybeSingle();
+  const { data, error } = await supabase.rpc("enqueue_latest_automation_job", {
+    target_organization_id: input.organizationId,
+    target_creator_profile_id: input.creatorProfileId,
+    target_conversation_id: input.conversationId,
+    target_trigger_message_uuid: input.triggerMessageUuid,
+    debounce_seconds: input.debounceSeconds ?? 2,
+  });
+  if (error) throw error;
   return data;
+}
+
+async function trace(supabase: AutoReplySupabase, input: AutoReplyInput, event: string, durationMs?: number, metadata: Record<string, unknown> = {}) {
+  await supabase.from("automation_traces").insert({ organization_id: input.organizationId, creator_profile_id: input.creatorProfileId, conversation_id: input.conversationId, automation_job_id: input.jobId, trigger_message_uuid: input.triggerMessageUuid, event, duration_ms: durationMs, metadata }).then(() => undefined, () => undefined);
+}
+
+async function activity(supabase: AutoReplySupabase, input: AutoReplyInput, event: ActivityEvent, status: "info" | "success" | "failed" | "skipped" = "info", durationMs?: number, error?: string) {
+  await logActivity(supabase, { organizationId: input.organizationId, creatorProfileId: input.creatorProfileId, fanId: input.fanId, conversationId: input.conversationId, automationJobId: input.jobId, traceId: input.traceId, messageUuid: input.triggerMessageUuid, event, status, latencyMs: durationMs, error });
 }
 
 export async function markAutomationJobFromResult(supabase: AutoReplySupabase, jobId: string | undefined, result: AutoReplyResult) {
   if (!jobId) return;
   if (result.status === "completed") {
-    await supabase.from("automation_jobs").update({ status: "completed", last_error: null, updated_at: new Date().toISOString() }).eq("id", jobId);
+    await supabase.from("automation_jobs").update({ status: "completed", processing_stage: "completed", generated_reply: result.generatedReply ?? null, grok_latency_ms: result.grokLatencyMs ?? null, fanvue_outgoing_uuid: result.externalUuid ?? null, locked_at: null, locked_by: null, last_error: null, updated_at: new Date().toISOString() }).eq("id", jobId);
     return;
   }
   if (result.status === "cancelled") {
@@ -106,6 +106,7 @@ export async function markAutomationJobFromResult(supabase: AutoReplySupabase, j
   if (result.status === "queued") {
     await supabase.from("automation_jobs").update({
       status: "pending",
+      processing_stage: "retry_scheduled",
       available_at: new Date(Date.now() + (result.retryAfterSeconds ?? 30) * 1000).toISOString(),
       locked_at: null,
       locked_by: null,
@@ -122,6 +123,7 @@ export async function processClaimedAutomationJob(supabase: AutoReplySupabase, j
   conversation_id: string;
   trigger_message_uuid: string;
   attempts: number;
+  trace_id: string;
 }): Promise<AutoReplyResult> {
   const { data: conversation } = await supabase
     .from("conversations")
@@ -142,6 +144,7 @@ export async function processClaimedAutomationJob(supabase: AutoReplySupabase, j
   if (!message?.body || message.sender_type !== "fan") return { status: "cancelled", reason: "Trigger message is not a fan message." };
 
   const result = await processFanMessageAutoReply(supabase, {
+    jobId: job.id,
     organizationId: job.organization_id,
     creatorProfileId: job.creator_profile_id,
     conversationId: job.conversation_id,
@@ -149,28 +152,39 @@ export async function processClaimedAutomationJob(supabase: AutoReplySupabase, j
     fanUuid: fan.external_uuid,
     triggerMessageUuid: message.external_uuid,
     latestFanMessage: message.body,
+    traceId: job.trace_id,
   });
+  if (result.status === "cancelled") await logActivity(supabase, { organizationId: job.organization_id, creatorProfileId: job.creator_profile_id, fanId: fan.id, conversationId: job.conversation_id, automationJobId: job.id, traceId: job.trace_id, messageUuid: message.external_uuid, event: "automation.skipped", status: "skipped", error: result.reason });
   await markAutomationJobFromResult(supabase, job.id, result);
   return result;
 }
 
 export async function processFanMessageAutoReply(supabase: AutoReplySupabase, input: AutoReplyInput): Promise<AutoReplyResult> {
+  await trace(supabase, input, "JOB_CLAIMED");
+  await activity(supabase, input, "automation.job.claimed");
   const { data: fan } = await supabase.from("fans").select("automation_paused, display_name, handle").eq("id", input.fanId).eq("organization_id", input.organizationId).maybeSingle();
   const skipReason = creatorPromoSkipReason(input.latestFanMessage, `${fan?.display_name ?? ""} ${fan?.handle ?? ""}`);
   if (skipReason) return { status: "cancelled", reason: skipReason };
-  if (fan?.automation_paused) return { status: "cancelled", reason: "AI stopped for this fan." };
+  if (fan?.automation_paused) { await activity(supabase, input, "fan.paused", "skipped"); return { status: "cancelled", reason: "AI stopped for this fan." }; }
 
   const { data: conversation } = await supabase.from("conversations").select("status").eq("id", input.conversationId).eq("organization_id", input.organizationId).maybeSingle();
-  if (conversation?.status === "paused") return { status: "cancelled", reason: "AI stopped for this conversation." };
+  if (conversation?.status === "paused") { await activity(supabase, input, "conversation.paused", "skipped"); return { status: "cancelled", reason: "AI stopped for this conversation." }; }
 
-  const { data: settings } = await supabase.from("automation_settings").select("enabled, approval_required, quiet_hours_start, quiet_hours_end, max_replies_per_hour, min_confidence").eq("organization_id", input.organizationId).is("creator_profile_id", null).maybeSingle();
-  const automation = settings ?? { enabled: true, approval_required: false, quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0 };
-  if (!automation.enabled) return { status: "cancelled", reason: "Bot is stopped for all fans." };
-  if (automation.approval_required) return { status: "cancelled", reason: "Manual approval is enabled." };
+  const [{ data: creator }, { data: settings }] = await Promise.all([
+    supabase.from("creator_profiles").select("id, automation_mode").eq("id", input.creatorProfileId).eq("organization_id", input.organizationId).maybeSingle(),
+    supabase.from("automation_settings").select("enabled, approval_required, quiet_hours_start, quiet_hours_end, max_replies_per_hour, min_confidence").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).maybeSingle(),
+  ]);
+  if (!creator) return { status: "cancelled", reason: "CREATOR_NOT_FOUND" };
+  const automation = settings ?? { enabled: creator.automation_mode !== "off", approval_required: creator.automation_mode === "draft", quiet_hours_start: null, quiet_hours_end: null, max_replies_per_hour: 20, min_confidence: 0.75 };
+  const mode = creator.automation_mode as "off" | "draft" | "auto_safe" | "full_auto";
+  if (!automation.enabled || mode !== "full_auto") return { status: "cancelled", reason: mode === "off" ? "AUTOMATION_DISABLED" : "AUTOMATION_MODE_NOT_FULL_AUTO" };
+  await trace(supabase, input, "CREATOR_RESOLVED", undefined, { automationMode: mode });
 
   const { data: latestMessage } = await supabase.from("messages").select("external_uuid, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (latestMessage?.external_uuid !== input.triggerMessageUuid || latestMessage.sender_type !== "fan") return { status: "cancelled", reason: "A newer local message exists." };
-  if (new Date(latestMessage.created_at).getTime() < Date.now() - 300_000) return { status: "cancelled", reason: "Fan message is no longer fresh." };
+  if (latestMessage?.external_uuid !== input.triggerMessageUuid || latestMessage.sender_type !== "fan") {
+    if (latestMessage?.sender_type === "fan" && latestMessage.external_uuid) await queueLatestAutomationJob(supabase, { organizationId: input.organizationId, creatorProfileId: input.creatorProfileId, conversationId: input.conversationId, triggerMessageUuid: latestMessage.external_uuid });
+    return { status: "cancelled", reason: latestMessage?.sender_type === "creator" ? "SUPERSEDED_BY_CREATOR_REPLY" : "SUPERSEDED_BY_NEWER_FAN_MESSAGE" };
+  }
 
   const parseTime = (value: unknown) => {
     if (typeof value !== "string" || !/^\d{2}:\d{2}$/.test(value)) return null;
@@ -190,19 +204,25 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
   const { count: recentConversationReplies } = await supabase.from("bot_action_logs").select("id", { count: "exact", head: true }).eq("organization_id", input.organizationId).eq("conversation_id", input.conversationId).eq("action_type", "message_send").gte("created_at", new Date(Date.now() - 90_000).toISOString());
   if ((recentConversationReplies ?? 0) > 0) return { status: "queued", reason: "Recent reply already sent to this fan.", retryAfterSeconds: 90 };
 
-  const { data: persona } = await supabase.from("persona_profiles").select("display_name, instructions").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("active", true).maybeSingle();
+  const { data: persona } = await supabase.from("persona_profiles").select("id, display_name, instructions").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("active", true).maybeSingle();
   const instructions = typeof persona?.instructions === "string" ? persona.instructions.trim() : "";
-  if (!instructions) return { status: "cancelled", reason: "No active persona is configured." };
+  if (!persona || !instructions) return { status: "cancelled", reason: "PERSONA_NOT_FOUND" };
+  await trace(supabase, input, "PERSONA_LOADED", undefined, { personaId: persona.id });
+  await activity(supabase, input, "persona.loaded");
 
-  const { data: messages } = await supabase.from("messages").select("body, sender_type, created_at").eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: true }).limit(12);
+  const [{ data: messages }, { data: memories }, { data: summary }] = await Promise.all([
+    supabase.from("messages").select("body, sender_type, created_at").eq("creator_profile_id", input.creatorProfileId).eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(12),
+    supabase.from("fan_memories").select("id, category, memory_key, memory_value, confidence, status, sensitivity, source_message_uuid, first_observed_at, last_confirmed_at, expires_at").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("fan_id", input.fanId).in("status", ["confirmed", "inferred"]).order("confidence", { ascending: false }).limit(8),
+    supabase.from("conversation_summaries").select("summary, unresolved_items").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("conversation_id", input.conversationId).maybeSingle(),
+  ]);
   const env = xaiEnv();
   const contextValue = buildMemoryContext({
     persona: instructions,
     latestFanMessage: input.latestFanMessage,
-    recentMessages: (messages ?? []).filter((message) => message.body?.trim()).map((message) => `${message.sender_type === "fan" ? "fan" : "owner"}: ${message.body}`),
-    relevantMemories: [],
-    rollingSummary: "",
-    unresolvedItems: [],
+    recentMessages: [...(messages ?? [])].reverse().filter((message) => message.body?.trim()).map((message) => `${message.sender_type === "fan" ? "fan" : "owner"}: ${message.body}`),
+    relevantMemories: (memories ?? []).map((memory) => ({ id: memory.id, organizationId: input.organizationId, creatorProfileId: input.creatorProfileId, fanId: input.fanId, category: memory.category, memoryKey: memory.memory_key, memoryValue: memory.memory_value, confidence: Number(memory.confidence), status: memory.status, sensitivity: memory.sensitivity, sourceMessageUuid: memory.source_message_uuid ?? undefined, firstObservedAt: memory.first_observed_at, lastConfirmedAt: memory.last_confirmed_at ?? undefined, expiresAt: memory.expires_at ?? undefined })),
+    rollingSummary: summary?.summary ?? "",
+    unresolvedItems: Array.isArray(summary?.unresolved_items) ? summary.unresolved_items : [],
     approvedKnowledge: "You are writing as the Fanvue owner/model to a real fan. Do not engage creator, collab, SFS, subscribe-to-me, or promotional-link accounts. Optimize for warm fan retention and ethical revenue. Keep replies concise and persona-faithful.",
   }, {
     maxRecentMessages: env.maxRecentMessages,
@@ -210,16 +230,46 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
     maxSummaryCharacters: env.maxSummaryCharacters,
     maxPromptCharacters: env.maxPromptCharacters,
   });
-  const decision = await generateReplyDecision(contextValue);
+  await trace(supabase, input, "MEMORY_LOADED", undefined, { memoryCount: memories?.length ?? 0 });
+  await activity(supabase, input, "memory.loaded");
+  const grokStarted = Date.now(); await trace(supabase, input, "GROK_STARTED"); await activity(supabase, input, "ai.generation.started");
+  let decision: Awaited<ReturnType<typeof generateReplyDecision>>;
+  try { decision = await generateReplyDecision(contextValue); }
+  catch (error) { await activity(supabase, input, "ai.generation.failed", "failed", Date.now() - grokStarted, error instanceof Error ? error.message : "AI generation failed."); throw error; }
+  const grokLatencyMs = Date.now() - grokStarted; await trace(supabase, input, "GROK_COMPLETED", grokLatencyMs);
+  await activity(supabase, input, "ai.generation.completed", "success", grokLatencyMs);
   if (decision.action !== "reply" || !decision.replyText?.trim() || decision.confidence < Number(automation.min_confidence ?? 0)) return { status: "cancelled", reason: "AI did not produce a sendable reply." };
+
+  if (automation.approval_required) {
+    await trace(supabase, input, "DRAFT_COMPLETED", grokLatencyMs, { personaId: persona.id });
+    return { status: "completed", generatedReply: decision.replyText.trim(), grokLatencyMs };
+  }
+
+  const [{ data: finalCreator }, { data: finalSettings }, { data: finalConversation }, { data: finalFan }, { data: finalLatest }] = await Promise.all([
+    supabase.from("creator_profiles").select("automation_mode").eq("id", input.creatorProfileId).eq("organization_id", input.organizationId).maybeSingle(),
+    supabase.from("automation_settings").select("enabled, approval_required").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).maybeSingle(),
+    supabase.from("conversations").select("status").eq("id", input.conversationId).eq("creator_profile_id", input.creatorProfileId).eq("organization_id", input.organizationId).maybeSingle(),
+    supabase.from("fans").select("automation_paused").eq("id", input.fanId).eq("creator_profile_id", input.creatorProfileId).eq("organization_id", input.organizationId).maybeSingle(),
+    supabase.from("messages").select("external_uuid, sender_type, created_at").eq("creator_profile_id", input.creatorProfileId).eq("conversation_id", input.conversationId).eq("organization_id", input.organizationId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  if (!finalCreator || finalCreator.automation_mode !== "full_auto" || finalSettings?.enabled === false || finalSettings?.approval_required || finalConversation?.status !== "ai_active" || finalFan?.automation_paused || finalLatest?.external_uuid !== input.triggerMessageUuid || finalLatest.sender_type !== "fan") return { status: "cancelled", reason: "FINAL_VALIDATION_FAILED" };
+  await trace(supabase, input, "VALIDATION_PASSED");
 
   const { data: connection } = await supabase.from("fanvue_connections").select("id, encrypted_access_token, encrypted_refresh_token, access_token_expires_at, external_user_uuid").eq("organization_id", input.organizationId).eq("creator_profile_id", input.creatorProfileId).eq("status", "healthy").maybeSingle();
   if (!connection || input.fanUuid === connection.external_user_uuid) return { status: "cancelled", reason: "Fanvue connection is unavailable or points to the owner account." };
   const accessToken = await accessTokenForAutomation(supabase, connection);
-  const payload = await fanvueRequest<{ messageUuid: string }>(`/v1/chats/${input.fanUuid}/message`, accessToken, {
-    method: "POST",
-    body: JSON.stringify({ text: decision.replyText.trim(), mediaUuids: [], price: null }),
-  });
+  await trace(supabase, input, "FANVUE_SEND_STARTED");
+  await activity(supabase, input, "fanvue.reply.started");
+  let payload: { messageUuid: string };
+  try {
+    payload = await fanvueRequest<{ messageUuid: string }>(`/v1/chats/${input.fanUuid}/message`, accessToken, {
+      method: "POST",
+      body: JSON.stringify({ text: decision.replyText.trim(), mediaUuids: [], price: null }),
+    });
+  } catch (error) { await activity(supabase, input, "fanvue.send.failed", "failed", undefined, error instanceof Error ? error.message : "Fanvue send failed."); throw error; }
+  if (!payload.messageUuid) return { status: "queued", reason: "FANVUE_SEND_MISSING_MESSAGE_UUID", retryAfterSeconds: 30 };
+  await trace(supabase, input, "FANVUE_SEND_SUCCESS", undefined, { outgoingUuid: payload.messageUuid });
+  await logActivity(supabase, { organizationId: input.organizationId, creatorProfileId: input.creatorProfileId, fanId: input.fanId, conversationId: input.conversationId, automationJobId: input.jobId, traceId: input.traceId, messageUuid: payload.messageUuid, event: "fanvue.reply.sent", status: "success" });
   await supabase.from("messages").upsert({
     organization_id: input.organizationId,
     creator_profile_id: input.creatorProfileId,
@@ -229,6 +279,7 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
     body: decision.replyText.trim(),
     created_at: new Date().toISOString(),
   }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
+  await trace(supabase, input, "OUTGOING_STORED", undefined, { outgoingUuid: payload.messageUuid });
   await recordBotActionSafely(supabase, {
     organizationId: input.organizationId,
     creatorProfileId: input.creatorProfileId,
@@ -243,5 +294,7 @@ export async function processFanMessageAutoReply(supabase: AutoReplySupabase, in
     externalUuid: payload.messageUuid,
     metadata: { source: "fanvue_auto_reply", triggerMessageUuid: input.triggerMessageUuid, personaName: persona?.display_name ?? null, confidence: decision.confidence },
   });
-  return { status: "completed", externalUuid: payload.messageUuid };
+  await trace(supabase, input, "JOB_COMPLETED");
+  await activity(supabase, input, "automation.job.completed", "success");
+  return { status: "completed", externalUuid: payload.messageUuid, generatedReply: decision.replyText.trim(), grokLatencyMs };
 }

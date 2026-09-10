@@ -2,7 +2,7 @@
 
 import { Megaphone, PauseCircle, PlayCircle, RefreshCw, Send, Settings2, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 export function SyncFanvueButton() {
   const router = useRouter();
@@ -29,26 +29,7 @@ export function SyncFanvueButton() {
 }
 
 export function LiveInboxRefresh() {
-  const router = useRouter();
-  const syncingRef = useRef(false);
-
-  useEffect(() => {
-    const syncInterval = window.setInterval(async () => {
-      if (document.visibilityState !== "visible" || syncingRef.current) return;
-      syncingRef.current = true;
-      try {
-        const response = await fetch("/api/fanvue/sync", { method: "POST" });
-        if (response.ok) router.refresh();
-      } finally {
-        syncingRef.current = false;
-      }
-    }, 3000);
-    return () => {
-      window.clearInterval(syncInterval);
-    };
-  }, [router]);
-
-  return <span className="live-refresh-pill">Supabase Realtime · fallback sync · 3s</span>;
+  return <span className="live-refresh-pill">Supabase Realtime · Fanvue fallback</span>;
 }
 
 type OperatorHealth = {

@@ -187,10 +187,10 @@ export function ChatDesk({ conversations, organizationId }: { conversations: Cha
 
     const reconciliation = window.setInterval(() => {
       void fetchInboxChanges();
-    }, 3000);
+    }, 2000);
     const fallbackSync = window.setInterval(() => {
       void syncNow();
-    }, 3000);
+    }, 5000);
     const recover = () => {
       void syncNow();
       void fetchInboxChanges();

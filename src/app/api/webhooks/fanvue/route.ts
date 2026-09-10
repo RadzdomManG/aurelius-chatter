@@ -2,7 +2,8 @@ import { verifyFanvueSignature } from "@/server/fanvue/signatures";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { fanvueMessageBody, fanvueMessageCreatedAt, fanvueRequest, fanvueSenderType, type FanvueMessage, type FanvuePaged } from "@/server/fanvue/client";
 import { accessTokenForAutomation, queueLatestAutomationJob } from "@/server/automation/fanvue-auto-reply";
-import { processAutomationQueue } from "@/server/automation/worker";
+import { wakeAutomationWorker } from "@/server/automation/wake";
+import { logActivity } from "@/server/activity/log";
 import { after } from "next/server";
 
 export const runtime = "nodejs";
@@ -92,17 +93,18 @@ async function ensureFanConversation(supabase: AdminClient, input: {
   return conversation ? { fanId: fan.id as string, fanUuid, conversationId: conversation.id as string, status: conversation.status as string } : null;
 }
 
-async function syncRecentFanvueMessages(supabase: AdminClient, connection: WebhookConnection, conversation: { conversationId: string }, fanUuid: string) {
+async function syncRecentFanvueMessages(supabase: AdminClient, connection: WebhookConnection, conversation: { conversationId: string }, fanUuid: string, eventMessageUuid: string) {
   const accessToken = await accessTokenForAutomation(supabase, connection);
   const messages = await fanvueRequest<FanvuePaged<FanvueMessage>>(`/v1/chats/${fanUuid}/messages?size=10&markAsRead=false`, accessToken);
-  let latestFanMessage: { uuid: string; body: string; createdAt: string } | null = null;
+  let matchedMessage: { uuid: string; body: string; createdAt: string; senderType: "fan" | "creator"; wasInserted: boolean } | null = null;
+  let latestMessageAt: string | null = null;
   for (const fanvueMessage of messages.data ?? []) {
     if (!fanvueMessage.uuid) continue;
     const body = fanvueMessageBody(fanvueMessage);
     if (!body) continue;
     const createdAt = fanvueMessageCreatedAt(fanvueMessage);
     const senderType = fanvueSenderType(fanvueMessage, connection.external_user_uuid);
-    await supabase.from("messages").upsert({
+    const { data: inserted } = await supabase.from("messages").upsert({
       organization_id: connection.organization_id,
       creator_profile_id: connection.creator_profile_id,
       conversation_id: conversation.conversationId,
@@ -110,15 +112,14 @@ async function syncRecentFanvueMessages(supabase: AdminClient, connection: Webho
       sender_type: senderType,
       body,
       created_at: createdAt,
-    }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
-    if (senderType === "fan" && (!latestFanMessage || new Date(createdAt).getTime() > new Date(latestFanMessage.createdAt).getTime())) {
-      latestFanMessage = { uuid: fanvueMessage.uuid, body, createdAt };
-    }
+    }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true }).select("id");
+    if (!latestMessageAt || new Date(createdAt).getTime() > new Date(latestMessageAt).getTime()) latestMessageAt = createdAt;
+    if (fanvueMessage.uuid === eventMessageUuid) matchedMessage = { uuid: fanvueMessage.uuid, body, createdAt, senderType, wasInserted: (inserted?.length ?? 0) > 0 };
   }
-  if (latestFanMessage) {
-    await supabase.from("conversations").update({ last_message_at: latestFanMessage.createdAt, updated_at: new Date().toISOString() }).eq("id", conversation.conversationId);
+  if (latestMessageAt) {
+    await supabase.from("conversations").update({ last_message_at: latestMessageAt, updated_at: new Date().toISOString() }).eq("id", conversation.conversationId);
   }
-  return latestFanMessage;
+  return matchedMessage;
 }
 
 async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeof sanitizedEvent>, connection: WebhookConnection) {
@@ -158,28 +159,32 @@ async function processWebhookEvent(supabase: AdminClient, safe: ReturnType<typeo
   const text = stringValue(data.text);
   if (!conversation) return;
   console.log("CONVERSATION_RESOLVED", { source: "webhook", conversationId: conversation.conversationId, fanUuid: conversation.fanUuid, creatorProfileId });
-  const senderType = safe.type === "creator.message.received" ? "fan" : "creator";
-  console.log("MESSAGE_DIRECTION_RESOLVED", { source: "webhook", externalMessageUuid: messageUuid, senderType });
-  let messageError = null;
-  if (messageUuid && text) {
-    const result = await supabase.from("messages").upsert({
+  if (!messageUuid) return;
+
+  if (safe.type === "creator.message.sent") {
+    if (!text) return;
+    await supabase.from("messages").upsert({
       organization_id: organizationId,
       creator_profile_id: creatorProfileId,
       conversation_id: conversation.conversationId,
       external_uuid: messageUuid,
-      sender_type: senderType,
+      sender_type: "creator",
       body: text,
       created_at: stringValue(data.created_at) ?? new Date().toISOString(),
     }, { onConflict: "creator_profile_id,external_uuid", ignoreDuplicates: true });
-    messageError = result.error;
-    if (!messageError) console.log("MESSAGE_INSERTED", { source: "webhook", externalMessageUuid: messageUuid, senderType, conversationId: conversation.conversationId });
+    return;
   }
-  const syncedLatest = senderType === "fan" ? await syncRecentFanvueMessages(supabase, connection, conversation, conversation.fanUuid).catch(() => null) : null;
-  const trigger = syncedLatest ?? (messageUuid && text ? { uuid: messageUuid, body: text, createdAt: stringValue(data.created_at) ?? new Date().toISOString() } : null);
-  if (!trigger) return;
-  if (!messageError && senderType === "fan" && conversation.status === "ai_active") {
-    await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: trigger.uuid });
-  }
+
+  const resolved = await syncRecentFanvueMessages(supabase, connection, conversation, conversation.fanUuid, messageUuid);
+  console.log("MESSAGE_DIRECTION_RESOLVED", { source: "webhook", externalMessageUuid: messageUuid, senderType: resolved?.senderType ?? "unresolved" });
+  if (!resolved || resolved.senderType !== "fan" || !resolved.wasInserted) return;
+
+  const job = await queueLatestAutomationJob(supabase, { organizationId, creatorProfileId, conversationId: conversation.conversationId, triggerMessageUuid: resolved.uuid, debounceSeconds: 0 }) as { id: string; trace_id: string };
+  const activityBase = { organizationId, creatorProfileId, fanId: conversation.fanId, conversationId: conversation.conversationId, automationJobId: job.id, traceId: job.trace_id, messageUuid: resolved.uuid };
+  await logActivity(supabase, { ...activityBase, event: "fan.message.sent" });
+  await logActivity(supabase, { ...activityBase, event: "message.stored", status: "success" });
+  await logActivity(supabase, { ...activityBase, event: "conversation.updated", status: "success" });
+  await logActivity(supabase, { ...activityBase, event: "automation.job.created", status: "success" });
 }
 
 export async function POST(request: Request) {
@@ -205,17 +210,22 @@ export async function POST(request: Request) {
     if (existingEvent?.status === "processed") return Response.json({ accepted: true, duplicate: true, processed: true, eventId: safe.id, eventType: safe.type }, { status: 202 });
     const { error: insertError } = await supabase.from("webhook_events").upsert({ organization_id: organizationId, creator_profile_id: creatorProfileId, external_event_id: safe.id, event_type: safe.type, sanitized_payload: safe.safePayload }, { onConflict: "external_event_id,event_type", ignoreDuplicates: true });
     if (insertError) return Response.json({ error: "Webhook event could not be persisted." }, { status: 503 });
-    if (organizationId && creatorProfileId) {
-      try {
-        if (connection) await processWebhookEvent(supabase, safe, connection);
-        after(() => processAutomationQueue(3).catch(() => undefined));
-        await supabase.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), last_error: null }).eq("external_event_id", safe.id).eq("event_type", safe.type);
-      } catch (error) {
-        await supabase.from("webhook_events").update({ status: "failed", last_error: error instanceof Error ? error.message : "Webhook processor failed." }).eq("external_event_id", safe.id).eq("event_type", safe.type);
-        return Response.json({ error: "Webhook event was saved but could not be processed." }, { status: 503 });
-      }
+    if (organizationId && creatorProfileId && connection) {
+      // Persist the verified event, enqueue one job, and let the separate worker processAutomationQueue handle the AI response asynchronously.
+      const requestUrl = request.url;
+      after(async () => {
+        try {
+          await processWebhookEvent(supabase, safe, connection);
+          await supabase.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), last_error: null }).eq("external_event_id", safe.id).eq("event_type", safe.type);
+          if (safe.type === "creator.message.received") await wakeAutomationWorker(requestUrl, 3);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Webhook processor failed.";
+          console.error(JSON.stringify({ level: "error", event: "WEBHOOK_EVENT_PROCESSING_FAILED", eventId: safe.id, eventType: safe.type, error: message }));
+          await supabase.from("webhook_events").update({ status: "failed", last_error: message }).eq("external_event_id", safe.id).eq("event_type", safe.type);
+        }
+      });
     }
-    return Response.json({ accepted: true, processed: Boolean(organizationId && creatorProfileId), eventId: safe.id, eventType: safe.type }, { status: 202 });
+    return Response.json({ accepted: true, persisted: true, processing: Boolean(organizationId && creatorProfileId && connection), eventId: safe.id, eventType: safe.type }, { status: 202 });
   } catch {
     return Response.json({ error: "Webhook processing is not configured." }, { status: 503 });
   }

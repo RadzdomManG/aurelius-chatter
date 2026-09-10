@@ -2,6 +2,7 @@ import Link from "next/link";
 import { BarChart3, Bot, Inbox, Plus, Settings, Sparkles, Users } from "lucide-react";
 
 import { ChatDesk, type ChatDeskConversation, type ChatDeskMessage } from "@/app/chat-desk";
+import { ActivityFeed, type ActivityFeedItem } from "@/app/activity-feed";
 import { AutoReplySettingsForm, BotAllControls, LiveInboxRefresh, MassMessageForm, MediaVaultBrowser, OperatorHealthPanel, PostToFanvueForm, SyncFanvueButton } from "@/app/inbox-actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -14,10 +15,11 @@ type DashboardData = {
   pendingAiJobs: number;
   organizationId: string | null;
   conversations: ChatDeskConversation[];
+  activity: ActivityFeedItem[];
 };
 
 async function getDashboardData(): Promise<DashboardData> {
-  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, pendingAiJobs: 0, organizationId: null, conversations: [] };
+  const empty: DashboardData = { configured: false, organizationName: null, modelCount: 0, conversationCount: 0, unreadCount: 0, pendingAiJobs: 0, organizationId: null, conversations: [], activity: [] };
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) return empty;
 
   try {
@@ -31,10 +33,11 @@ async function getDashboardData(): Promise<DashboardData> {
     const { data: creatorConnections } = await supabase.from("fanvue_connections").select("external_user_uuid").eq("organization_id", membership.organization_id).eq("status", "healthy");
     const creatorUuids = new Set((creatorConnections ?? []).map((connection) => connection.external_user_uuid).filter(Boolean));
 
-    const [models, conversationRows, pendingAiJobs] = await Promise.all([
+    const [models, conversationRows, pendingAiJobs, activityRows] = await Promise.all([
       supabase.from("creator_profiles").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id),
       supabase.from("conversations").select("id, status, unread_count, updated_at, fans(display_name, handle, automation_paused, external_uuid), messages(id, body, created_at, external_uuid, sender_type)").eq("organization_id", membership.organization_id).order("last_message_at", { ascending: false }).limit(20),
       supabase.from("automation_jobs").select("id", { count: "exact", head: true }).eq("organization_id", membership.organization_id).eq("status", "pending"),
+      supabase.from("activity_events").select("id, trace_id, message_uuid, automation_job_id, conversation_id, event, status, latency_ms, error, created_at, creator_profiles(display_name), fans(display_name, handle)").eq("organization_id", membership.organization_id).order("created_at", { ascending: false }).limit(30),
     ]);
 
     const organization = membership.organizations as { name?: string } | { name?: string }[] | null;
@@ -57,6 +60,19 @@ async function getDashboardData(): Promise<DashboardData> {
         messages,
       }];
     });
+    const relativeTime = (value: string) => {
+      const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+      if (seconds < 10) return "just now";
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      return `${Math.floor(minutes / 60)}h ago`;
+    };
+    const activity = (activityRows.data ?? []).map((row) => {
+      const creator = Array.isArray(row.creator_profiles) ? row.creator_profiles[0] : row.creator_profiles;
+      const fan = Array.isArray(row.fans) ? row.fans[0] : row.fans;
+      return { id: row.id, traceId: row.trace_id, messageUuid: row.message_uuid, jobId: row.automation_job_id, conversationId: row.conversation_id, event: row.event, status: row.status, latencyMs: row.latency_ms, error: row.error, createdAt: row.created_at, timeLabel: relativeTime(row.created_at), modelName: creator?.display_name ?? "Unknown model", fanName: fan?.display_name ?? fan?.handle ?? "Unknown fan" };
+    });
 
     return {
       configured: true,
@@ -67,6 +83,7 @@ async function getDashboardData(): Promise<DashboardData> {
       pendingAiJobs: pendingAiJobs.count ?? 0,
       organizationId: membership.organization_id,
       conversations: rows,
+      activity,
     };
   } catch {
     return empty;
@@ -113,6 +130,7 @@ export default async function Home() {
           </div>
 
           <OperatorHealthPanel />
+          <ActivityFeed items={data.activity} />
 
           {hasActivity && data.organizationId ? <ChatDesk key={data.conversations.map((conversation) => `${conversation.id}:${conversation.messages.at(-1)?.external_uuid ?? ""}:${conversation.status}`).join("|")} conversations={data.conversations} organizationId={data.organizationId} /> : <section className="truth-empty-panel">
             <div className="truth-empty-icon"><Bot size={25} /></div>

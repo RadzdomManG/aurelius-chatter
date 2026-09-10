@@ -52,6 +52,7 @@ describe("Fanvue security helpers", () => {
   it("webhook route processes real-time message and follower event shapes", () => {
     const source = readFileSync(join(process.cwd(), "src/app/api/webhooks/fanvue/route.ts"), "utf8");
     expect(source).toContain("creator.message.received");
+    expect(source).toContain("fan.message.sent");
     expect(source).toContain("creator.follow.created");
     expect(source).toContain("unread_messages_count");
     expect(source).toContain("data.follower");
@@ -61,16 +62,21 @@ describe("Fanvue security helpers", () => {
     expect(source).toContain("processed");
   });
 
-  it("Fanvue sync imports messages and queues the same auto-reply pipeline", () => {
+  it("Fanvue sync queues only newly inserted fan messages for auto-replies", () => {
     const source = readFileSync(join(process.cwd(), "src/app/api/fanvue/sync/route.ts"), "utf8");
     expect(source).toContain("SYNC_CHAT_LIMIT");
     expect(source).toContain("SYNC_MESSAGES_PER_CHAT");
     expect(source).not.toContain("/v1/chats?page=1&size=50");
     expect(source).toContain("markAsRead=false");
+    expect(source).toContain("existingConversationByFan");
+    expect(source).toContain("existingConversationHasHistory");
+    expect(source).toContain("remoteLastMessageAt");
+    expect(source).toContain("wasInserted && senderType === \"fan\"");
     expect(source).toContain("createSupabaseAdminClient");
     expect(source).toContain("queueLatestAutomationJob");
-    expect(source).toContain("const automation = await processAutomationQueue(3)");
-    expect(source).toContain("automationProcessed");
+    expect(source).toContain("if (existingConversationHasHistory && latestNewFanMessage)");
+    expect(source).toContain("wakeAutomationWorker(request.url");
+    expect(source).toContain("automationQueued");
   });
 
   it("exposes a tenant-scoped operator health endpoint for live diagnostics", () => {

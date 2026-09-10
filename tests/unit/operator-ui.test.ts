@@ -19,7 +19,8 @@ describe("Fanvue operator UI", () => {
     expect(source).not.toContain("60000");
     expect(source).toContain("fallback");
     expect(source).toContain("Live via Fanvue sync");
-    expect(source).toContain("3000");
+    expect(source).toContain("2000");
+    expect(source).toContain("5000");
   });
 
   it("shows professional analytics metrics and graphs", () => {
@@ -51,8 +52,7 @@ describe("Fanvue operator UI", () => {
     expect(form).toContain("Auto-reply controls");
     expect(form).toContain("RetryJobButton");
     expect(form).toContain("Supabase Realtime");
-    expect(form).toContain("3000");
-    expect(form).toContain("fallback sync · 3s");
+    expect(form).toContain("Fanvue fallback");
     expect(form).toContain("Start bot for all");
     expect(form).toContain("Stop bot for all");
     expect(mediaRoute).toContain("/media?");
